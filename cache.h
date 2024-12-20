@@ -1,9 +1,7 @@
-#ifndef CACHE_H
-#define CACHE_H
-
 #include <stdint.h>
 #include <stdbool.h>
-#include <stdio.h>  // Include stdio.h for FILE type and file operations
+#include <stdio.h>
+#include <stdlib.h>
 
 // Constants for memory and cache configuration
 #define MAIN_MEMORY_SIZE (1 << 20)  // 2^20 words (1MB of memory)
@@ -14,16 +12,30 @@
 #define INDEX_BITS 6               // log2(64) = 6 bits for cache index
 #define TAG_BITS (32 - INDEX_BITS - BLOCK_OFFSET_BITS) // Assuming 32-bit address
 
+
+#define INVALID   0  // Cache line is invalid
+#define SHARED    1  // Cache line is valid and shared with other caches
+#define EXCLUSIVE 2  // Cache line is valid and only present in this cache
+#define MODIFIED  3  // Cache line is valid, modified, and dirty
+
 // Main Memory (1MB)
 extern uint32_t main_memory[MAIN_MEMORY_SIZE];
 
 // Cache Line structure
-typedef struct {
+typedef struct cacheLine{
     uint32_t data[BLOCK_SIZE];  // Data: 4 words (32 bits each)
     uint32_t tag;               // Tag for comparison
     bool valid;                 // Valid bit
-    bool dirty;                 // Dirty bit (write-back)
+    bool dirty;                 // Dirty bit (used for write-back)
+    int state;           // Coherence state
 } CacheLine;
+
+typedef enum {
+    BUS_READ,          // Request for shared read
+    BUS_READ_EXCLUSIVE, // Request for exclusive read (write intent)
+    BUS_WRITE_BACK,    // Write data back to main memory
+    BUS_INVALIDATE     // Invalidate cache line
+} BusOperation;
 
 // Data Cache structure (DSRAM)
 typedef struct {
@@ -59,4 +71,4 @@ void cache_write(DSRAM *dsram, uint32_t address, uint32_t data, FILE *logfile);
 
 int read_from_main_memory(int *main_memory, int address);
 
-#endif // CACHE_H
+
