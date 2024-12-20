@@ -57,4 +57,6 @@ bool cache_read(DSRAM *dsram, uint32_t address, uint32_t *data, FILE *logfile);
 // Cache write operation
 void cache_write(DSRAM *dsram, uint32_t address, uint32_t data, FILE *logfile);
 
+int read_from_main_memory(int *main_memory, int address);
+
 #endif // CACHE_H
