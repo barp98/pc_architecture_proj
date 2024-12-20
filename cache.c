@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdlib.h>
 
 #define MAIN_MEMORY_SIZE (1 << 20) // 2^20 words (1MB of memory)
 #define CACHE_SIZE 256            // 256 words
@@ -90,6 +91,17 @@ void write_cache_to_file(DSRAM *dsram) {
     fprintf(cachefile, "End of Cache State\n\n");
 
     fclose(cachefile);
+}
+
+int read_from_main_memory(int *main_memory, int address) {
+    // Check if the address is within the valid range
+    if (address < 0 || address >= MAIN_MEMORY_SIZE) {
+        fprintf(stderr, "Error: Invalid memory address %d\n", address);
+        exit(EXIT_FAILURE); // Exit the program or handle the error appropriately
+    }
+
+    // Return the value at the specified memory address
+    return (int)main_memory[address];
 }
 
 // Function to print the main memory to a text file
