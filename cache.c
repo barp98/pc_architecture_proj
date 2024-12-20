@@ -1,7 +1,5 @@
-#include <stdio.h>
-#include <stdint.h>
-#include <stdbool.h>
-#include <stdlib.h>
+#include "cache.h"
+
 
 #define MAIN_MEMORY_SIZE (1 << 20) // 2^20 words (1MB of memory)
 #define CACHE_SIZE 256            // 256 words
@@ -11,22 +9,64 @@
 #define INDEX_BITS 6              // log2(64) = 6 bits for cache index
 #define TAG_BITS (32 - INDEX_BITS - BLOCK_OFFSET_BITS) // Assuming 32-bit address
 
+
+void snoop_bus(DSRAM *dsram, BusOperation op, uint32_t address, uint32_t *data_out) {
+    uint32_t tag, index, block_offset;
+    get_cache_address_parts(address, &tag, &index, &block_offset);
+
+    CacheLine *line = &dsram->cache[index];
+    if (line->valid && line->tag == tag) {
+        switch (op) {
+            case BUS_READ:
+                if (line->state == MODIFIED) {
+                    // Write back to memory and transition to SHARED
+                    printf("Snooping BUS_READ: Writing back modified data.\n");
+                    for (int i = 0; i < BLOCK_SIZE; i++) {
+                        main_memory[(address / BLOCK_SIZE) * BLOCK_SIZE + i] = line->data[i];
+                    }
+                    line->dirty = false;
+                    line->state = SHARED;
+                } else if (line->state == EXCLUSIVE) {
+                    // Transition to SHARED
+                    printf("Snooping BUS_READ: Transitioning to SHARED.\n");
+                    line->state = SHARED;
+                }
+                break;
+
+            case BUS_READ_EXCLUSIVE:
+                // Invalidate the cache line
+                printf("Snooping BUS_READ_EXCLUSIVE: Invalidating cache line.\n");
+                line->valid = false;
+                line->state = INVALID;
+                break;
+
+            case BUS_INVALIDATE:
+                // Invalidate the cache line
+                printf("Snooping BUS_INVALIDATE: Invalidating cache line.\n");
+                line->valid = false;
+                line->state = INVALID;
+                break;
+
+            case BUS_WRITE_BACK:
+                if (line->state == MODIFIED) {
+                    // Write back the modified data
+                    printf("Snooping BUS_WRITE_BACK: Writing back modified data.\n");
+                    for (int i = 0; i < BLOCK_SIZE; i++) {
+                        main_memory[(address / BLOCK_SIZE) * BLOCK_SIZE + i] = line->data[i];
+                    }
+                    line->dirty = false;
+                    line->state = INVALID;
+                }
+                break;
+
+            default:
+                printf("Unknown bus operation.\n");
+        }
+    }
+}
+
 // Main Memory (2^20 words)
 uint32_t main_memory[MAIN_MEMORY_SIZE];
-
-// Cache Line structure
-typedef struct {
-    uint32_t data[BLOCK_SIZE];  // Data: 4 words (32 bits each)
-    uint32_t tag;               // Tag for comparison
-    bool valid;                 // Valid bit
-    bool dirty;                 // Dirty bit (write-back)
-} CacheLine;
-
-// Data Cache structure
-typedef struct {
-    CacheLine cache[NUM_BLOCKS];  // Cache array with 64 blocks
-    uint64_t cycle_count;         // Total cycles counter
-} DSRAM;
 
 // Function to initialize the DSRAM (cache) with the value 2
 void init_dsr_cache(DSRAM *dsram) {
@@ -63,16 +103,18 @@ void log_cache_state(DSRAM *dsram, FILE *logfile) {
         fprintf(logfile, "Block %d: ", i);
         fprintf(logfile, "Valid: %d, Dirty: %d, Tag: 0x%X, Data: ", line->valid, line->dirty, line->tag);
         for (int j = 0; j < BLOCK_SIZE; j++) {
-            fprintf(logfile, "0x%X ", line->data[j]);
+            fprintf(logfile, "0x%08X ", line->data[j]);
         }
         fprintf(logfile, "\n");
     }
     fprintf(logfile, "End of Cache State\n\n");
+    fflush(logfile);  // Ensure the contents are flushed immediately
 }
+
 
 // Function to write cache state to a separate text file
 void write_cache_to_file(DSRAM *dsram) {
-    FILE *cachefile = fopen("cache_state_log.txt", "w");
+    FILE *cachefile = fopen("cache_state_log.txt", "w"); 
     if (cachefile == NULL) {
         perror("Error opening cache state file");
         return;
@@ -90,8 +132,9 @@ void write_cache_to_file(DSRAM *dsram) {
     }
     fprintf(cachefile, "End of Cache State\n\n");
 
-    fclose(cachefile);
+    fclose(cachefile);  // Close the file after writing
 }
+
 
 int read_from_main_memory(int *main_memory, int address) {
     // Check if the address is within the valid range
@@ -161,16 +204,17 @@ void cache_write(DSRAM *dsram, uint32_t address, uint32_t data, FILE *logfile) {
     CacheLine *line = &dsram->cache[index];
     uint64_t cycles = 0;
 
+    // Check if it's a cache hit
     if (line->valid && line->tag == tag) {
-        // Cache hit, write data to the cache line (hit takes 1 cycle)
+        // Cache hit, write data to the cache line
         line->data[block_offset] = data;
         line->dirty = true;  // Set dirty bit because the cache line has been modified
         printf("Cache write hit! Data written to index %u, block offset %u\n", index, block_offset);
         cycles = 1;  // 1 cycle for cache write hit
     } else {
         // Cache miss, allocate a new block in the cache
+        // Check if the cache line is dirty and needs to be written back to memory
         if (line->valid && line->dirty) {
-            // Write back the dirty cache line to memory (if necessary)
             uint32_t block_start_address = 
                 (line->tag << (INDEX_BITS + BLOCK_OFFSET_BITS)) | (index << BLOCK_OFFSET_BITS);
             
@@ -187,15 +231,15 @@ void cache_write(DSRAM *dsram, uint32_t address, uint32_t data, FILE *logfile) {
             }
         }
 
-        // Allocate the block and load data
+        // Allocate the block and load data into the cache
         uint32_t block_start_address = 
             (tag << (INDEX_BITS + BLOCK_OFFSET_BITS)) | (index << BLOCK_OFFSET_BITS);
         for (int i = 0; i < BLOCK_SIZE; i++) {
             line->data[i] = main_memory[block_start_address + i];
         }
-        line->valid = true;
-        line->tag = tag;
-        line->data[block_offset] = data;  // Write data to cache
+        line->valid = true;  // Mark the cache line as valid
+        line->tag = tag;  // Update the tag
+        line->data[block_offset] = data;  // Write the new data to the cache
         line->dirty = true;  // Set dirty bit because the cache line has been modified
 
         printf("Cache write miss! Data written to index %u, block offset %u\n", index, block_offset);
@@ -204,5 +248,8 @@ void cache_write(DSRAM *dsram, uint32_t address, uint32_t data, FILE *logfile) {
 
     dsram->cycle_count += cycles;  // Update total cycle count
     printf("Cycles after write: %lu\n", dsram->cycle_count);  // Print total cycles after each write operation
-}
 
+    // Log the cache state after this operation
+    log_cache_state(dsram, logfile);
+    write_cache_to_file(dsram);  // Write cache state to separate file
+}
