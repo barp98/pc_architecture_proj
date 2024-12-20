@@ -101,12 +101,12 @@ char register_file[NUM_REGS][9] = {
     "00000000", /* 0 - always 0 */
     "00000000", /* 1 - non-writable, contains immediate */
     "00000005", /* 2 */
-    "00000007", /* 3 */
-    "00000000", /* 4 */
-    "00000000", /* 5 */
-    "00000000", /* 6 */
-    "00000000", /* 7 */
-    "00000000", /* 8 */
+    "00000005", /* 3 */
+    "00000005", /* 4 */
+    "00000005", /* 5 */
+    "00000005", /* 6 */
+    "00000005", /* 7 */
+    "00000005", /* 8 */
     "00000000", /* 9 */
     "00000000", /* 10 */
     "00000000", /* 11 */
@@ -376,9 +376,9 @@ void decode(Core *core, Command *com, char command_line[32]) {
     }
 
     // Save register values into decode buffers
-    core->decode_buf.rs_value = Hex_2_Int_2s_Comp(register_file[com->rs]);
-    core->decode_buf.rt_value = Hex_2_Int_2s_Comp(register_file[com->rt]);
-    core->decode_buf.rd_value = Hex_2_Int_2s_Comp(register_file[com->rd]);
+    core->decode_buf.rs_value = Hex_2_Int_2s_Comp(core->register_file[com->rs]);
+    core->decode_buf.rt_value = Hex_2_Int_2s_Comp(core->register_file[com->rt]);
+    core->decode_buf.rd_value = Hex_2_Int_2s_Comp(core->register_file[com->rd]);
     core->decode_buf.rs = com->rs;
     core->decode_buf.rt = com->rt;
     core->decode_buf.rd = com->rd;
@@ -578,6 +578,7 @@ void writeback_state(Command *com, Core *core) {
         case 8: // SRL (Shift Right Logical)
             // Write back the result from the memory buffer to the register file
             Int_2_Hex(core->mem_buf.load_result, core->register_file[core->mem_buf.destination_register]);
+            //printf("data written into register = %d", Hex_2_Int_2s_Comp(core->register_file[core->mem_buf.destination_register]));
             break;
         
         case 15: // JAL (Jump and Link)
@@ -606,116 +607,130 @@ int main() {
     DSRAM dsram;
     init_dsr_cache(&dsram);
     init_main_memory();
-    //int main_memory[MEMORY_SIZE];
 
-    // Open a log file
+    // Open log files for different purposes
     FILE *logfile = fopen("cache_log.txt", "w");
-    if (logfile == NULL) {
+    if (!logfile) {
         perror("Error opening log file");
-        return 1;
+        exit(1);
     }
 
-    // Open a file to log main memory state
     FILE *memfile = fopen("main_memory_state_log.txt", "w");
-    if (memfile == NULL) {
+    if (!memfile) {
         perror("Error opening memory state file");
         fclose(logfile);
-        return 1;
+        exit(1);
     }
-    
-    // Open the instruction memory file
+
+    // Open instruction memory file
     FILE *imem = fopen("imem0.txt", "r");
-    if (imem == NULL) {
+    if (!imem) {
         perror("Error opening instruction memory file");
-        return EXIT_FAILURE;
+        fclose(logfile);
+        fclose(memfile);
+        exit(EXIT_FAILURE);
     }
 
-    char *instruction;
-    Command com;       
-    char command_line[INSTRUCTION_LENGTH + 1]; // Buffer for the instruction     
-    //DecodeBuffers decode_buf;
-    //ExecuteBuffer execute_buf; // Buffer to hold execution results
-    //MemBuffer mem_buf;  // Buffer to hold memory results
-
-    // Open the regout0.txt file in write mode to reset it before starting
+    // Initialize the core structure with instruction data
+    Core p1 = {
+        .pc = 0,
+        .register_file = {
+            "00000000", /* 0 - always 0 */
+            "00000000", /* 1 - non-writable, contains immediate */
+            "000000A1", /* 2 */
+            "000000A1", /* 3 */
+            "000000A1", /* 4 */
+            "00000005", /* 5 */
+            "00000005", /* 6 */
+            "00000005", /* 7 */
+            "00000005", /* 8 */
+            "00000000", /* 9 */
+            "00000000", /* 10 */
+            "00000000", /* 11 */
+            "00000000", /* 12 */
+            "00000000", /* 13 */
+            "00000000", /* 14 */
+            "00000000"  /* 15 */
+        }, .instruction_file = imem
+    };
+    // Open regout0.txt to reset the file before starting
     FILE *regout = fopen("regout0.txt", "w");
-    if (regout == NULL) {
+    if (!regout) {
         perror("Error opening regout0.txt for writing");
-        return EXIT_FAILURE;
+        fclose(imem);
+        fclose(logfile);
+        fclose(memfile);
+        exit(EXIT_FAILURE);
     }
-    fclose(regout);  // Close the file immediately since we're appending later
+    fclose(regout);  // Close the file immediately
 
-
-    Core p1 = {.instruction_file = imem, // Initialize the core structure
-               .pc = 0};
-
-
-    
-    // Fetch, decode, execute, and print instructions until the halt signal
     printf("Fetching, decoding, executing, and writing back instructions from imem0.txt:\n");
+
+    // Loop to process instructions until the halt condition
+    char command_line[INSTRUCTION_LENGTH + 1];
+    Command com;
+
     while (fetch_instruction(&p1, command_line)) {
         printf("Fetched instruction: %s\n", command_line);
 
-        // Decode the instruction and set control signals
-        decode(&p1, &com, command_line); // Pass com, decode_buf for decoding
-        
-        // Print the properties of the command
+        // Decode instruction and set control signals
+        decode(&p1, &com, command_line);
         printf("Command properties: ");
-        printf("opcode: %d, rd: %d, rs: %d, rt: %d, imm: %d, state: %d\n",
-               com.opcode, com.rd, com.rs, com.rt, com.imm, com.state);
-        
-        // Print the control signals for this instruction
+        printf("opcode: %d, rd: %d, rs: %d, rt: %d, imm: %d\n",
+               com.opcode, com.rd, com.rs, com.rt, com.imm);
+
+        // Print control signals
         printf("Control signals for opcode %d:\n", com.opcode);
         printf("alu_src: %d, mem_to_reg: %d, reg_write: %d, mem_read: %d, "
                "mem_write: %d, branch: %d, jump: %d, halt: %d\n\n",
                com.control_signals.alu_src, com.control_signals.mem_to_reg,
                com.control_signals.reg_write, com.control_signals.mem_read, com.control_signals.mem_write,
                com.control_signals.branch, com.control_signals.jump, com.control_signals.halt);
-        
-        // Print the values of decode buffers
+
+        // Print the decode buffer values
         printf("Decode buffer values:\n");
         printf("rs_value: %d, rt_value: %d, rd_value: %d\n", 
-       p1.decode_buf.rs_value, p1.decode_buf.rt_value, p1.decode_buf.rd_value);
-        printf("rs: %d, rt: %d, rd: %d\n\n", 
-       p1.decode_buf.rs, p1.decode_buf.rt, p1.decode_buf.rd);
+               p1.decode_buf.rs_value, p1.decode_buf.rt_value, p1.decode_buf.rd_value);
+        printf("rs: %d, rt: %d, rd: %d\n\n", p1.decode_buf.rs, p1.decode_buf.rt, p1.decode_buf.rd);
 
-        // Execute the instruction
-        execute(&p1, &com); // Pass com, decode_buf for execution
-
-        // Print the results of execution
+        // Execute instruction
+        execute(&p1, &com);
         printf("After execution:\n");
         printf("ALU result: %d, Destination register: %d\n", p1.execute_buf.alu_result, p1.execute_buf.destination);
 
-        // Perform memory operations if needed
-        memory_state(&com, &p1); // Call memory_state
+        // Perform memory operation if needed
+        memory_state(&com, &p1);
 
-        // Write back the results to the register file
+        // Writeback operation to registers
         writeback_state(&com, &p1);
 
-        // Print the destination register value after writeback
-        if (com.control_signals.reg_write) { // Check if a write occurred
+        // Print the destination register value after writeback if a write occurred
+        if (com.control_signals.reg_write) {
             printf("After writeback: Register %d value: %d\n", 
-                   p1.execute_buf.destination, Hex_2_Int_2s_Comp(register_file[p1.execute_buf.destination]));
+                   p1.mem_buf.destination_register, Hex_2_Int_2s_Comp(p1.register_file[p1.mem_buf.destination_register]));
         }
 
         // Check for halt condition
         if (com.control_signals.halt) {
             printf("Execution halted.\n");
-            break; // Exit the loop if the halt signal is set
+            break;
         }
 
-        // Print the register file after every command (in a new row in the file)
+        // Print the register file to file
         print_register_file_to_file("regout0.txt");
 
+        // Print the program counter after writeback
         printf("Program counter (PC) after writeback: %d\n", p1.pc);
-        printf("--------------------------------------------------\n");
+        printf("--------------------------------------------------");
+
+        // Write the main memory state to file
         write_main_memory_to_file(memfile);
-         
     }
+
+    // Clean up file pointers
     fclose(memfile);
     fclose(logfile);
-    //initialize_memory();
+    fclose(imem);
 
-    fclose(imem); // Close the instruction memory file
-    return 0;
+    printf("Program execution complete.\n");
 }
