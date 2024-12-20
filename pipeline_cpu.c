@@ -81,8 +81,20 @@ typedef struct {
 } MemBuffer;
 
 
-//int main_memory[MEMORY_SIZE]; // Main memory array
+typedef struct Core {
+    int core_id;
+    int pc;                     // Program counter
+    FILE *instruction_file;     // Pointer to the instruction file
+    char current_instruction[INSTRUCTION_LENGTH + 1]; // Current fetched instruction
+    DecodeBuffers decode_buf;   // Decode buffers
+    ExecuteBuffer execute_buf; // Execute buffer for each core
+    MemBuffer mem_buf;  // Memory buffer for each core
+    char register_file[NUM_REGS][9]; // Register file
+    DSRAM dsram; // Core-specific memory
+} Core;
 
+
+//int main_memory[MEMORY_SIZE]; // Main memory array
 // registers 
 /* IO register array*/
 char register_file[NUM_REGS][9] = {
@@ -245,24 +257,27 @@ void BuildCommand(char * command_line, Command * com)
 
 }
 
-char* fetch_instruction(FILE *instruction_file, int *pc) {
-    static char instruction[INSTRUCTION_LENGTH + 1]; // Buffer to hold the fetched instruction (+1 for null terminator)
+int fetch_instruction(Core *core, char *command_line) {
+    static char instruction[INSTRUCTION_LENGTH + 1]; // Buffer for fetched instruction
 
-    // Move to the correct position in the file: we need to account for the newline character
-    fseek(instruction_file, (*pc) * (INSTRUCTION_LENGTH + 1), SEEK_SET);
+    // Move to the correct position in the instruction file
+    fseek(core->instruction_file, core->pc * (INSTRUCTION_LENGTH + 1), SEEK_SET);
 
-    // Read the instruction at the current PC (including the newline)
-    if (fgets(instruction, INSTRUCTION_LENGTH + 1, instruction_file) != NULL) {
-        (*pc)++; // Increment the program counter after reading
-        return instruction;
+    // Fetch the instruction
+    if (fgets(instruction, INSTRUCTION_LENGTH + 1, core->instruction_file) != NULL) {
+        core->pc++; // Increment program counter
+        strcpy(command_line, instruction); // Copy instruction to command_line
+        return 1;
     } else {
-        return NULL; // End of instructions
+        return 0; // End of instructions
     }
 }
 
-void decode(char* instruction_line, Command *com, DecodeBuffers *decode_buf)
-{
-    BuildCommand(instruction_line, com);
+void decode(Core *core, Command *com, char command_line[32]) {
+    // Build the Command struct from the command line
+    BuildCommand(command_line, com);
+    printf("opcode of com is: %d\n", com->opcode);
+    printf("%s", command_line);
 
     // Process the opcode and set control signals based on it
     switch (com->opcode) {
@@ -272,25 +287,26 @@ void decode(char* instruction_line, Command *com, DecodeBuffers *decode_buf)
         case 3: // or
         case 4: // xor
         case 5: // mul
-            com->control_signals.alu_src = 0;  // ALU operand is from register
-            com->control_signals.mem_to_reg = 0;  // ALU result is written to register
-            com->control_signals.reg_write = 1;  // Write back to register
-            com->control_signals.mem_read = 0;  // No memory read
-            com->control_signals.mem_write = 0;  // No memory write
-            com->control_signals.branch = 0;  // No branch
-            com->control_signals.jump = 0;  // No jump
+            com->control_signals.alu_src = 0;
+            com->control_signals.mem_to_reg = 0;
+            com->control_signals.reg_write = 1;
+            com->control_signals.mem_read = 0;
+            com->control_signals.mem_write = 0;
+            com->control_signals.branch = 0;
+            com->control_signals.jump = 0;
             com->control_signals.halt = 0;
             break;
+
         case 6: // sll (shift left logical)
         case 7: // sra (shift right arithmetic)
         case 8: // srl (shift right logical)
-            com->control_signals.alu_src = 1;      // ALU uses immediate value
-            com->control_signals.mem_to_reg = 0;   // Data comes from ALU
-            com->control_signals.reg_write = 1;    // Write back to register
-            com->control_signals.mem_read = 0;     // No memory read
-            com->control_signals.mem_write = 0;    // No memory write
-            com->control_signals.branch = 0;       // No branching
-            com->control_signals.jump = 0;         // No jump
+            com->control_signals.alu_src = 1;
+            com->control_signals.mem_to_reg = 0;
+            com->control_signals.reg_write = 1;
+            com->control_signals.mem_read = 0;
+            com->control_signals.mem_write = 0;
+            com->control_signals.branch = 0;
+            com->control_signals.jump = 0;
             com->control_signals.halt = 0;
             break;
 
@@ -300,283 +316,297 @@ void decode(char* instruction_line, Command *com, DecodeBuffers *decode_buf)
         case 12: // bgt (branch if greater than)
         case 13: // ble (branch if less or equal)
         case 14: // bge (branch if greater or equal)
-            com->control_signals.alu_src = 0;  // ALU operand comes from registers
-            com->control_signals.mem_to_reg = 0;  // No memory to register transfer
-            com->control_signals.reg_write = 0;  // No register write
-            com->control_signals.mem_read = 0;  // No memory read
-            com->control_signals.mem_write = 0;  // No memory write
-            com->control_signals.branch = 1;  // These are branch instructions
-            com->control_signals.jump = 0;  // No jump
+            com->control_signals.alu_src = 0;
+            com->control_signals.mem_to_reg = 0;
+            com->control_signals.reg_write = 0;
+            com->control_signals.mem_read = 0;
+            com->control_signals.mem_write = 0;
+            com->control_signals.branch = 1;
+            com->control_signals.jump = 0;
             com->control_signals.halt = 0;
             break;
 
-
         case 15: // jal (jump and link)
-            com->control_signals.alu_src = 0;     // No ALU operation, jump address
-            com->control_signals.mem_to_reg = 0;  // Data comes from jump address
-            com->control_signals.reg_write = 1;   // Write back to register
-            com->control_signals.mem_read = 0;    // No memory read
-            com->control_signals.mem_write = 0;   // No memory write
-            com->control_signals.branch = 0;      // No branch
-            com->control_signals.jump = 1;        // Jump to new address
+            com->control_signals.alu_src = 0;
+            com->control_signals.mem_to_reg = 0;
+            com->control_signals.reg_write = 1;
+            com->control_signals.mem_read = 0;
+            com->control_signals.mem_write = 0;
+            com->control_signals.branch = 0;
+            com->control_signals.jump = 1;
             com->control_signals.halt = 0;
             break;
 
         case 16: // lw (load word)
-            com->control_signals.alu_src = 1;     // ALU uses immediate (offset)
-            com->control_signals.mem_to_reg = 1;  // Data comes from memory
-            com->control_signals.reg_write = 1;   // Write back to register
-            com->control_signals.mem_read = 1;    // Memory read
-            com->control_signals.mem_write = 0;   // No memory write
-            com->control_signals.branch = 0;      // No branching
-            com->control_signals.jump = 0;        // No jump
+            com->control_signals.alu_src = 1;
+            com->control_signals.mem_to_reg = 1;
+            com->control_signals.reg_write = 1;
+            com->control_signals.mem_read = 1;
+            com->control_signals.mem_write = 0;
+            com->control_signals.branch = 0;
+            com->control_signals.jump = 0;
             com->control_signals.halt = 0;
             break;
 
         case 17: // sw (store word)
-            com->control_signals.alu_src = 1;     // ALU uses immediate (offset)
-            com->control_signals.mem_to_reg = 0;  // No data from memory
-            com->control_signals.reg_write = 0;   // No register write
-            com->control_signals.mem_read = 0;    // No memory read
-            com->control_signals.mem_write = 1;   // Memory write
-            com->control_signals.branch = 0;      // No branching
-            com->control_signals.jump = 0;        // No jump
+            com->control_signals.alu_src = 1;
+            com->control_signals.mem_to_reg = 0;
+            com->control_signals.reg_write = 0;
+            com->control_signals.mem_read = 0;
+            com->control_signals.mem_write = 1;
+            com->control_signals.branch = 0;
+            com->control_signals.jump = 0;
             com->control_signals.halt = 0;
             break;
 
         case 20: // halt
-            com->control_signals.alu_src = 0;  // No ALU operand is immediate (address offset)
-            com->control_signals.mem_to_reg = 0;  // No memory to register transfer
-            com->control_signals.reg_write = 0;  // No register write
-            com->control_signals.mem_read = 0;  // No memory read
-            com->control_signals.mem_write = 0;  // No Write data to memory
-            com->control_signals.branch = 0;  // No branch
-            com->control_signals.jump = 0;  // No jump
-            com->control_signals.halt = 1;  // Halt signal set
+            com->control_signals.alu_src = 0;
+            com->control_signals.mem_to_reg = 0;
+            com->control_signals.reg_write = 0;
+            com->control_signals.mem_read = 0;
+            com->control_signals.mem_write = 0;
+            com->control_signals.branch = 0;
+            com->control_signals.jump = 0;
+            com->control_signals.halt = 1;
             break;
 
         default:
-            printf("Unrecognized opcode: %d\n", com->opcode);
+            printf("Core %d: Unrecognized opcode: %d\n", core->core_id, com->opcode);
             break;
     }
 
     // Save register values into decode buffers
-    decode_buf->rs_value = Hex_2_Int_2s_Comp(register_file[com->rs]);
-    decode_buf->rt_value = Hex_2_Int_2s_Comp(register_file[com->rt]);
-    decode_buf->rd_value = Hex_2_Int_2s_Comp(register_file[com->rd]); // Store rd value for R-type instructions
-    decode_buf->rs = com->rs;
-    decode_buf->rt = com->rt;
-    decode_buf->rd = com->rd;
-
+    core->decode_buf.rs_value = Hex_2_Int_2s_Comp(register_file[com->rs]);
+    core->decode_buf.rt_value = Hex_2_Int_2s_Comp(register_file[com->rt]);
+    core->decode_buf.rd_value = Hex_2_Int_2s_Comp(register_file[com->rd]);
+    core->decode_buf.rs = com->rs;
+    core->decode_buf.rt = com->rt;
+    core->decode_buf.rd = com->rd;
 }
 
-void execute(Command *com, DecodeBuffers *decode_buf, int *pc, ExecuteBuffer *execute_buf) {
+void execute(Core *core, Command *com) {
     com->state = EXEC;
     int alu_result = 0;
     int address = 0;
     int memory_or_not = 0;
 
-
     if (com->control_signals.halt) {
-        printf("Halt instruction encountered. Stopping execution.\n");
+        printf("Core %d: Halt instruction encountered. Stopping execution.\n", core->core_id);
         return;
     }
 
     switch (com->opcode) {
         case 0: // ADD (R-type)
-            alu_result = decode_buf->rs_value + decode_buf->rt_value;
+            alu_result = core->decode_buf.rs_value + core->decode_buf.rt_value;
             memory_or_not = 0;
             break;
 
         case 1: // SUB (R-type)
-            alu_result = decode_buf->rs_value - decode_buf->rt_value;
+            alu_result = core->decode_buf.rs_value - core->decode_buf.rt_value;
             memory_or_not = 0;
             break;
 
         case 2: // AND (R-type)
-            alu_result = decode_buf->rs_value & decode_buf->rt_value;
+            alu_result = core->decode_buf.rs_value & core->decode_buf.rt_value;
             memory_or_not = 0;
             break;
 
         case 3: // OR (R-type)
-            alu_result = decode_buf->rs_value | decode_buf->rt_value;
+            alu_result = core->decode_buf.rs_value | core->decode_buf.rt_value;
             memory_or_not = 0;
             break;
 
         case 4: // XOR (R-type)
-            alu_result = decode_buf->rs_value ^ decode_buf->rt_value;
+            alu_result = core->decode_buf.rs_value ^ core->decode_buf.rt_value;
             memory_or_not = 0;
             break;
 
         case 5: // MUL (R-type)
-            alu_result = decode_buf->rs_value * decode_buf->rt_value;
+            alu_result = core->decode_buf.rs_value * core->decode_buf.rt_value;
             memory_or_not = 0;
             break;
 
         case 6: // SLL (Shift Left Logical)
-            alu_result = decode_buf->rt_value << com->imm;
+            alu_result = core->decode_buf.rt_value << com->imm;
             memory_or_not = 0;
             break;
 
         case 7: // SRA (Shift Right Arithmetic)
-            alu_result = decode_buf->rt_value >> com->imm;
+            alu_result = core->decode_buf.rt_value >> com->imm;
             memory_or_not = 0;
             break;
 
         case 8: // SRL (Shift Right Logical)
-            alu_result = (unsigned int)decode_buf->rt_value >> com->imm;
+            alu_result = (unsigned int)core->decode_buf.rt_value >> com->imm;
             memory_or_not = 0;
             break;
 
         case 9: // BEQ (Branch if Equal)
-            if (decode_buf->rs_value == decode_buf->rt_value) {
-                *pc = *pc + com->imm;  // Modify PC to branch
+            if (core->decode_buf.rs_value == core->decode_buf.rt_value) {
+                core->pc = core->pc + (com->imm << 2);  // Branch calculation (multiply immediate by 4)
             }
             memory_or_not = 0;
             break;
 
         case 10: // BNE (Branch if Not Equal)
-            if (decode_buf->rs_value != decode_buf->rt_value) {
-                *pc = *pc + com->imm;  // Modify PC to branch
+            if (core->decode_buf.rs_value != core->decode_buf.rt_value) {
+                core->pc = core->pc + (com->imm << 2);
             }
             memory_or_not = 0;
             break;
 
         case 11: // BLT (Branch if Less Than)
-            if (decode_buf->rs_value < decode_buf->rt_value) {
-                *pc = *pc + com->imm;
+            if (core->decode_buf.rs_value < core->decode_buf.rt_value) {
+                core->pc = core->pc + (com->imm << 2);
             }
             memory_or_not = 0;
             break;
 
         case 12: // BGT (Branch if Greater Than)
-            if (decode_buf->rs_value > decode_buf->rt_value) {
-                *pc = *pc + com->imm;
+            if (core->decode_buf.rs_value > core->decode_buf.rt_value) {
+                core->pc = core->pc + (com->imm << 2);
             }
             memory_or_not = 0;
             break;
 
         case 13: // BLE (Branch if Less or Equal)
-            if (decode_buf->rs_value <= decode_buf->rt_value) {
-                *pc = *pc + com->imm;
+            if (core->decode_buf.rs_value <= core->decode_buf.rt_value) {
+                core->pc = core->pc + (com->imm << 2);
             }
             memory_or_not = 0;
             break;
 
         case 14: // BGE (Branch if Greater or Equal)
-            if (decode_buf->rs_value >= decode_buf->rt_value) {
-                *pc = *pc + com->imm;
+            if (core->decode_buf.rs_value >= core->decode_buf.rt_value) {
+                core->pc = core->pc + (com->imm << 2);
             }
             memory_or_not = 0;
             break;
 
         case 15: // JAL (Jump and Link)
-            // Store the return address (PC + 1) into register 15 (link register) as a hexadecimal string
-            *pc = com->imm;  // Jump to target address
+            //core->register_file[15] = core->pc + 1;  // Save return address
+            core->pc = com->imm;  // Jump to target address
             memory_or_not = 0;
             break;
 
         case 16: // LW (Load Word)
-            // Assume memory access is handled outside this function
-            address = decode_buf->rs_value + decode_buf->rt_value;  // Address calculation
+            address = core->decode_buf.rs_value + com->imm;  // Base + offset
             memory_or_not = 1;
             break;
 
         case 17: // SW (Store Word)
-            // Assume memory access is handled outside this function
-            address = decode_buf->rs_value + decode_buf->rt_value;  // Address calculation
+            address = core->decode_buf.rs_value + com->imm;  // Base + offset
             memory_or_not = 1;
             break;
-            
-        case 20: // HALT (Halt execution)
-            com->control_signals.halt = 1;  // Halt flag set
+
+        case 20: // HALT
+            com->control_signals.halt = 1;
             memory_or_not = 0;
-            printf("Halt instruction encountered. Stopping execution.\n");
+            printf("Core %d: Halt instruction encountered. Stopping execution.\n", core->core_id);
             return;
 
         default:
-            printf("Unrecognized opcode: %d\n", com->opcode);
+            printf("Core %d: Unrecognized opcode: %d\n", core->core_id, com->opcode);
             break;
     }
-    printf("Result is: %d\n", alu_result);
 
-    // Store ALU result in the execute buffer
-    execute_buf->alu_result = alu_result;
-    execute_buf->destination = com->rd;  
-    execute_buf->mem_address = address;
-    execute_buf->memory_or_not = memory_or_not;
-    execute_buf->rd_value = decode_buf->rd_value;
+    printf("Core %d: ALU Result = %d\n", core->core_id, alu_result);
 
+    // Update the execute buffer
+    core->execute_buf.alu_result = alu_result;
+    core->execute_buf.destination = com->rd;
+    core->execute_buf.mem_address = address;
+    core->execute_buf.memory_or_not = memory_or_not;
+    core->execute_buf.rd_value = core->decode_buf.rd_value;
 }
 
-void memory_state(Command *com, ExecuteBuffer *execute_buf, MemBuffer *mem_buf, int *pc, DSRAM *dsram)
+void memory_state(Command *com, Core *core)
 {
     com->state = MEM;
-    
+    int address = 0;
+    uint32_t data;
+
     // If memory access is required (i.e., for Load/Store operations)
-    if (execute_buf->memory_or_not == 1)  // Assuming memory_or_not indicates if we are working with memory
+    if (core->execute_buf.memory_or_not == 1)  // Memory operation indicator (load/store)
     {
         if (com->control_signals.mem_read == 1)  // Load Word (LW)
         {
-            // Cache read instead of direct memory read
-            uint32_t data;
-            bool hit = cache_read(dsram, execute_buf->mem_address, &data, NULL);  // Assuming you don't need to log for now
+            // Cache read instead of direct memory read for the specific core
+            bool hit = cache_read(&(core->dsram), core->execute_buf.mem_address, &data, NULL);
             
             if (hit) {
-                mem_buf->load_result = data;
-                printf("Memory Read (Cache hit): Loaded value %d from address %d\n", mem_buf->load_result, execute_buf->mem_address);
+                core->mem_buf.load_result = data;  // Store loaded data in the buffer
+                printf("Memory Read (Cache hit): Loaded value %d from address %d\n", core->mem_buf.load_result, core->execute_buf.mem_address);
             } else {
+                // Handle cache miss (fetch data from memory if needed)
                 printf("Memory Read (Cache miss): Fetching data from memory\n");
+                // Simulate memory fetch (optional, may be handled by cache)
+                data = read_from_main_memory(main_memory, core->execute_buf.mem_address);
+                core->mem_buf.load_result = data;
             }
 
-            mem_buf->destination_register = execute_buf->destination;
+            core->mem_buf.destination_register = core->execute_buf.destination;  // Store destination register for writing back
         }
 
         if (com->control_signals.mem_write == 1)  // Store Word (SW)
         {
-            // Cache write instead of direct memory write
-            cache_write(dsram, execute_buf->mem_address, execute_buf->rd_value, NULL);
-            printf("Memory Write (Cache): Stored value %d to address %d\n", execute_buf->rd_value, execute_buf->mem_address);
+            // Cache write instead of direct memory write for the specific core
+            cache_write(&(core->dsram), core->execute_buf.mem_address, core->execute_buf.rd_value, NULL);
+            printf("Memory Write (Cache): Stored value %d to address %d\n", core->execute_buf.rd_value, core->execute_buf.mem_address);
         }
     }
     else
     {
-        // No memory operation, can proceed to the next phase or do nothing
-        mem_buf->load_result = execute_buf->alu_result;
-        mem_buf->destination_register = execute_buf->destination;
+        // No memory operation, directly use the ALU result
+        core->mem_buf.load_result = core->execute_buf.alu_result;
+        core->mem_buf.destination_register = core->execute_buf.destination;
         printf("No memory operation needed.\n");
     }
 }
 
-void WRITEBACK(Command *com, int *pc, MemBuffer *mem_buf) {
+void writeback_state(Command *com, Core *core) {
     // Check if the instruction writes back to a register
-        switch(com->opcode)
-        {
-        case 0:
-        case 1:
-        case 2:
-        case 3:
-        case 4:
-        case 5:
-        case 6:
-        case 7:
-        case 8:
-            Int_2_Hex(mem_buf->load_result, register_file[mem_buf->destination_register]);
+    switch (com->opcode) {
+        case 0: // ADD
+        case 1: // SUB
+        case 2: // AND
+        case 3: // OR
+        case 4: // XOR
+        case 5: // MUL
+        case 6: // SLL (Shift Left Logical)
+        case 7: // SRA (Shift Right Arithmetic)
+        case 8: // SRL (Shift Right Logical)
+            // Write back the result from the memory buffer to the register file
+            Int_2_Hex(core->mem_buf.load_result, core->register_file[core->mem_buf.destination_register]);
             break;
-        case 15:
-            Int_2_Hex(*pc + 1, register_file[15]);
-            break;
-        case 16:
-            Int_2_Hex(mem_buf->load_result, register_file[mem_buf->destination_register]);
-        }
         
+        case 15: // JAL (Jump and Link)
+            // Store the return address (PC + 1) into the link register (usually $ra or $15)
+            Int_2_Hex(core->pc + 1, core->register_file[15]);
+            break;
 
+        case 16: // LW (Load Word)
+            // Write the loaded data to the destination register
+            Int_2_Hex(core->mem_buf.load_result, core->register_file[core->mem_buf.destination_register]);
+            break;
+
+        case 17: // SW (Store Word) - No write-back to register
+            break;
+
+        case 20: // HALT - No write-back
+            break;
+
+        default:
+            printf("Unrecognized opcode %d for writeback.\n", com->opcode);
+            break;
     }
+}
 
 int main() {
     DSRAM dsram;
     init_dsr_cache(&dsram);
     init_main_memory();
+    //int main_memory[MEMORY_SIZE];
 
     // Open a log file
     FILE *logfile = fopen("cache_log.txt", "w");
@@ -592,8 +622,6 @@ int main() {
         fclose(logfile);
         return 1;
     }
-
-
     
     // Open the instruction memory file
     FILE *imem = fopen("imem0.txt", "r");
@@ -602,12 +630,12 @@ int main() {
         return EXIT_FAILURE;
     }
 
-    int pc = 0; // Initialize the program counter
     char *instruction;
-    Command com;            // Command structure now includes control signals
-    DecodeBuffers decode_buf;
-    ExecuteBuffer execute_buf; // Buffer to hold execution results
-    MemBuffer mem_buf;  // Buffer to hold memory results
+    Command com;       
+    char command_line[INSTRUCTION_LENGTH + 1]; // Buffer for the instruction     
+    //DecodeBuffers decode_buf;
+    //ExecuteBuffer execute_buf; // Buffer to hold execution results
+    //MemBuffer mem_buf;  // Buffer to hold memory results
 
     // Open the regout0.txt file in write mode to reset it before starting
     FILE *regout = fopen("regout0.txt", "w");
@@ -617,19 +645,25 @@ int main() {
     }
     fclose(regout);  // Close the file immediately since we're appending later
 
+
+    Core p1 = {.instruction_file = imem, // Initialize the core structure
+               .pc = 0};
+
+
+    
     // Fetch, decode, execute, and print instructions until the halt signal
     printf("Fetching, decoding, executing, and writing back instructions from imem0.txt:\n");
-    while ((instruction = fetch_instruction(imem, &pc)) != NULL) {
-        printf("Fetched instruction: %s\n", instruction);
+    while (fetch_instruction(&p1, command_line)) {
+        printf("Fetched instruction: %s\n", command_line);
 
         // Decode the instruction and set control signals
-        decode(instruction, &com, &decode_buf); // Pass com, decode_buf for decoding
-
+        decode(&p1, &com, command_line); // Pass com, decode_buf for decoding
+        
         // Print the properties of the command
         printf("Command properties: ");
         printf("opcode: %d, rd: %d, rs: %d, rt: %d, imm: %d, state: %d\n",
                com.opcode, com.rd, com.rs, com.rt, com.imm, com.state);
-
+        
         // Print the control signals for this instruction
         printf("Control signals for opcode %d:\n", com.opcode);
         printf("alu_src: %d, mem_to_reg: %d, reg_write: %d, mem_read: %d, "
@@ -637,29 +671,31 @@ int main() {
                com.control_signals.alu_src, com.control_signals.mem_to_reg,
                com.control_signals.reg_write, com.control_signals.mem_read, com.control_signals.mem_write,
                com.control_signals.branch, com.control_signals.jump, com.control_signals.halt);
-
+        
         // Print the values of decode buffers
         printf("Decode buffer values:\n");
-        printf("rs_value: %d, rt_value: %d, rd_value: %d\n", decode_buf.rs_value, decode_buf.rt_value, decode_buf.rd_value);
-        printf("rs: %d, rt: %d, rd: %d\n\n", decode_buf.rs, decode_buf.rt, decode_buf.rd);
+        printf("rs_value: %d, rt_value: %d, rd_value: %d\n", 
+       p1.decode_buf.rs_value, p1.decode_buf.rt_value, p1.decode_buf.rd_value);
+        printf("rs: %d, rt: %d, rd: %d\n\n", 
+       p1.decode_buf.rs, p1.decode_buf.rt, p1.decode_buf.rd);
 
         // Execute the instruction
-        execute(&com, &decode_buf, &pc, &execute_buf); // Pass com, decode_buf for execution
+        execute(&p1, &com); // Pass com, decode_buf for execution
 
         // Print the results of execution
         printf("After execution:\n");
-        printf("ALU result: %d, Destination register: %d\n", execute_buf.alu_result, execute_buf.destination);
+        printf("ALU result: %d, Destination register: %d\n", p1.execute_buf.alu_result, p1.execute_buf.destination);
 
         // Perform memory operations if needed
-        memory_state(&com, &execute_buf, &mem_buf, &pc, &dsram); // Call memory_state
+        memory_state(&com, &p1); // Call memory_state
 
         // Write back the results to the register file
-        WRITEBACK(&com, &pc, &mem_buf);
+        writeback_state(&com, &p1);
 
         // Print the destination register value after writeback
         if (com.control_signals.reg_write) { // Check if a write occurred
             printf("After writeback: Register %d value: %d\n", 
-                   execute_buf.destination, Hex_2_Int_2s_Comp(register_file[execute_buf.destination]));
+                   p1.execute_buf.destination, Hex_2_Int_2s_Comp(register_file[p1.execute_buf.destination]));
         }
 
         // Check for halt condition
@@ -671,9 +707,10 @@ int main() {
         // Print the register file after every command (in a new row in the file)
         print_register_file_to_file("regout0.txt");
 
-        printf("Program counter (PC) after writeback: %d\n", pc);
+        printf("Program counter (PC) after writeback: %d\n", p1.pc);
         printf("--------------------------------------------------\n");
         write_main_memory_to_file(memfile);
+         
     }
     fclose(memfile);
     fclose(logfile);
