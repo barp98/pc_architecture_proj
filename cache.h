@@ -41,6 +41,7 @@ typedef enum {
 typedef struct {
     CacheLine cache[NUM_BLOCKS]; // Cache array with 64 blocks
     uint64_t cycle_count;        // Total cycles counter
+    FILE *logfile;
 } DSRAM;
 
 // Function Prototypes
@@ -70,5 +71,7 @@ bool cache_read(DSRAM *dsram, uint32_t address, uint32_t *data, FILE *logfile);
 void cache_write(DSRAM *dsram, uint32_t address, uint32_t data, FILE *logfile);
 
 int read_from_main_memory(int *main_memory, int address);
+
+void snoop_bus(DSRAM *dsram, BusOperation op, uint32_t address, uint32_t *data_out);
 
 
