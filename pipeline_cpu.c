@@ -91,6 +91,7 @@ typedef struct Core {
     MemBuffer mem_buf;  // Memory buffer for each core
     char register_file[NUM_REGS][9]; // Register file
     DSRAM dsram; // Core-specific memory
+
 } Core;
 
 
@@ -520,27 +521,23 @@ void execute(Core *core, Command *com) {
     core->execute_buf.rd_value = core->decode_buf.rd_value;
 }
 
-void memory_state(Command *com, Core *core)
-{
+void memory_state(Command *com, Core *core) {
     com->state = MEM;
     int address = 0;
     uint32_t data;
 
     // If memory access is required (i.e., for Load/Store operations)
-    if (core->execute_buf.memory_or_not == 1)  // Memory operation indicator (load/store)
-    {
-        if (com->control_signals.mem_read == 1)  // Load Word (LW)
-        {
+    if (core->execute_buf.memory_or_not == 1) {  // Memory operation indicator (load/store)
+        if (com->control_signals.mem_read == 1) {  // Load Word (LW)
             // Cache read instead of direct memory read for the specific core
-            bool hit = cache_read(&(core->dsram), core->execute_buf.mem_address, &data, NULL);
-            
+            bool hit = cache_read(&(core->dsram), core->execute_buf.mem_address, &data, core->dsram.logfile);  // Pass the logfile
+
             if (hit) {
                 core->mem_buf.load_result = data;  // Store loaded data in the buffer
                 printf("Memory Read (Cache hit): Loaded value %d from address %d\n", core->mem_buf.load_result, core->execute_buf.mem_address);
             } else {
                 // Handle cache miss (fetch data from memory if needed)
                 printf("Memory Read (Cache miss): Fetching data from memory\n");
-                // Simulate memory fetch (optional, may be handled by cache)
                 data = read_from_main_memory(main_memory, core->execute_buf.mem_address);
                 core->mem_buf.load_result = data;
             }
@@ -548,15 +545,12 @@ void memory_state(Command *com, Core *core)
             core->mem_buf.destination_register = core->execute_buf.destination;  // Store destination register for writing back
         }
 
-        if (com->control_signals.mem_write == 1)  // Store Word (SW)
-        {
+        if (com->control_signals.mem_write == 1) {  // Store Word (SW)
             // Cache write instead of direct memory write for the specific core
-            cache_write(&(core->dsram), core->execute_buf.mem_address, core->execute_buf.rd_value, NULL);
+            cache_write(&(core->dsram), core->execute_buf.mem_address, core->execute_buf.rd_value, core->dsram.logfile);  // Pass the logfile
             printf("Memory Write (Cache): Stored value %d to address %d\n", core->execute_buf.rd_value, core->execute_buf.mem_address);
         }
-    }
-    else
-    {
+    } else {
         // No memory operation, directly use the ALU result
         core->mem_buf.load_result = core->execute_buf.alu_result;
         core->mem_buf.destination_register = core->execute_buf.destination;
@@ -604,61 +598,66 @@ void writeback_state(Command *com, Core *core) {
 }
 
 int main() {
-    DSRAM dsram;
-    init_dsr_cache(&dsram);
     init_main_memory();
-
-    // Open log files for different purposes
-    FILE *logfile = fopen("cache_log.txt", "w");
-    if (!logfile) {
-        perror("Error opening log file");
-        exit(1);
-    }
-
-    FILE *memfile = fopen("main_memory_state_log.txt", "w");
-    if (!memfile) {
-        perror("Error opening memory state file");
-        fclose(logfile);
-        exit(1);
-    }
-
+    // Initialize the core structure with instruction data
     // Open instruction memory file
     FILE *imem = fopen("imem0.txt", "r");
     if (!imem) {
         perror("Error opening instruction memory file");
-        fclose(logfile);
-        fclose(memfile);
         exit(EXIT_FAILURE);
     }
 
-    // Initialize the core structure with instruction data
-    Core p1 = {
-        .pc = 0,
-        .register_file = {
-            "00000000", /* 0 - always 0 */
-            "00000000", /* 1 - non-writable, contains immediate */
-            "000000A1", /* 2 */
-            "000000A1", /* 3 */
-            "000000A1", /* 4 */
-            "00000005", /* 5 */
-            "00000005", /* 6 */
-            "00000005", /* 7 */
-            "00000005", /* 8 */
-            "00000000", /* 9 */
-            "00000000", /* 10 */
-            "00000000", /* 11 */
-            "00000000", /* 12 */
-            "00000000", /* 13 */
-            "00000000", /* 14 */
-            "00000000"  /* 15 */
-        }, .instruction_file = imem
-    };
+    FILE *logfile1 = fopen("cache1_logfile.txt", "w");
+    if (!imem) {
+        perror("Error opening memory state file");
+        fclose(imem);
+        exit(1);
+    }
+
+
+Core p1 = {
+    .pc = 0,
+    .register_file = {
+        "00000000", /* 0 - always 0 */
+        "00000000", /* 1 - non-writable, contains immediate */
+        "000000A1", /* 2 */
+        "000000A1", /* 3 */
+        "000000A1", /* 4 */
+        "00000005", /* 5 */
+        "00000005", /* 6 */
+        "00000005", /* 7 */
+        "00000005", /* 8 */
+        "00000000", /* 9 */
+        "00000000", /* 10 */
+        "00000000", /* 11 */
+        "00000000", /* 12 */
+        "00000000", /* 13 */
+        "00000000", /* 14 */
+        "00000000"  /* 15 */
+    },
+    .instruction_file = imem,
+    .dsram = {
+        .cycle_count = 0,  // Initialize cycle count to zero
+        .logfile = logfile1 // Logfile pointer to the log file created
+    }
+};
+
+
+    FILE *memfile = fopen("main_memory_state_log.txt", "w");
+    if (!memfile) {
+        perror("Error opening memory state file");
+        fclose(logfile1);
+        fclose(imem);
+        exit(1);
+    }
+
+
     // Open regout0.txt to reset the file before starting
     FILE *regout = fopen("regout0.txt", "w");
     if (!regout) {
         perror("Error opening regout0.txt for writing");
         fclose(imem);
-        fclose(logfile);
+        fclose(logfile1);
         fclose(memfile);
         exit(EXIT_FAILURE);
     }
@@ -729,8 +728,9 @@ int main() {
 
     // Clean up file pointers
     fclose(memfile);
-    fclose(logfile);
+    fclose(logfile1);
     fclose(imem);
 
     printf("Program execution complete.\n");
+
 }
