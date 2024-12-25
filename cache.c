@@ -98,21 +98,22 @@ void get_cache_address_parts(uint32_t address, uint32_t *tag, uint32_t *index, u
 // Function to log cache state to a text file
 void log_cache_state(DSRAM *dsram, FILE *logfile) {
     fprintf(logfile, "Cache State:\n");
+    fprintf(logfile, "Block Number | Valid | Dirty | Tag        | Data\n");
+    fprintf(logfile, "---------------------------------------------------\n");
     for (int i = 0; i < NUM_BLOCKS; i++) {
         CacheLine *line = &dsram->cache[i];
-        fprintf(logfile, "Block %d: ", i);
-        fprintf(logfile, "Valid: %d, Dirty: %d, Tag: 0x%X, Data: ", line->valid, line->dirty, line->tag);
+        fprintf(logfile, "%12d | %5d | %5d | 0x%08X | ", i, line->valid, line->dirty, line->tag);
         for (int j = 0; j < BLOCK_SIZE; j++) {
             fprintf(logfile, "0x%08X ", line->data[j]);
         }
         fprintf(logfile, "\n");
     }
-    fprintf(logfile, "End of Cache State\n\n");
-    fflush(logfile);  // Ensure the contents are flushed immediately
+    fprintf(logfile, "---------------------------------------------------\n");
+    fflush(logfile);
 }
 
-
 // Function to write cache state to a separate text file
+/*
 void write_cache_to_file(DSRAM *dsram) {
     FILE *cachefile = fopen("cache_state_log.txt", "w"); 
     if (cachefile == NULL) {
@@ -134,6 +135,7 @@ void write_cache_to_file(DSRAM *dsram) {
 
     fclose(cachefile);  // Close the file after writing
 }
+*/
 
 
 int read_from_main_memory(int *main_memory, int address) {
@@ -251,5 +253,7 @@ void cache_write(DSRAM *dsram, uint32_t address, uint32_t data, FILE *logfile) {
 
     // Log the cache state after this operation
     log_cache_state(dsram, logfile);
-    write_cache_to_file(dsram);  // Write cache state to separate file
+    //write_cache_to_file(dsram);  // Write cache state to separate file
 }
+
+
