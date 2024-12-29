@@ -1,87 +1,307 @@
+#include "pipeline_cpu.h"
 #include <stdio.h>
-#include "pipeline.h"
-
+#include <stdlib.h>
+#include <string.h>
+#define MAX_LINE_LENGTH 10
+#define FETCH 0
+#define DECODE 1
+#define EXEC 2
+#define MEM 3
+#define WB 4
+/* Instantiate Buffers */
 int instantiate_buffers()
 {
-    ControlSignals control;
-    Command com;
-    DecodeBuffers decode_buf;
-    ExecuteBuffer execute_buf; // Buffer to hold execution results
+    ControlSignals control = {0};
+    Command com = {0};
+    DecodeBuffers decode_buf = {0};
+    ExecuteBuffer execute_buf = {0};
+    MemBuffer mem_buf = {0};
 
-
+    return 0; // Return success
 }
-int state_machine(FILE *instruction_file, int clock, int pc, int state )
-{
-    switch (state) {
-    case FETCH:
-        // fetch instruction
-        fetch_instruction(imem, &pc); 
-        break;
-    case DECODE:
-        // Code to execute if expression == constant2
-        decode(instruction, &control, &com, &decode_buf); // Include decode_buf in decode call
-        break;
-    case EXEC:
-       // Execute the instruction
-        execute(&control, &com, &decode_buf, &pc, &execute_buf); // Assuming execute_buf is populated during execution
-        break; 
-    case MEM:
-        MEMORY(); 
-    case WB:
-        writeback(&control, &com, DecodeBuffers *decode_buf, int *pc, ExecuteBuffer *execute_buf );
-        break; 
-    case STALL:
-        return -1; 
-    default:
-        // Code to execute if no case matches
-        break;
+
+void modify_file_line(const char *filename, int line_number, const char *new_content) {
+ FILE *file = fopen(filename, "r");
+    if (!file) {
+        perror("Error opening file");
+        return;
+    }
+
+    FILE *temp = fopen("temp.txt", "w");
+    if (!temp) {
+        perror("Error opening temporary file");
+        fclose(file);
+        return;
+    }
+
+    char buffer[1024];
+    int current_line = 1;
+
+    // Copy the original file to the temporary file, appending to the target line.
+    while (fgets(buffer, sizeof(buffer), file)) {
+        if (current_line == line_number) {
+            // Remove the newline character from the existing line before appending.
+            buffer[strcspn(buffer, "\n")] = '\0';
+            fprintf(temp, "%s%s\n", buffer, new_content);  // Append new content.
+        } else {
+            fprintf(temp, "%s", buffer);  // Copy the original line.
+        }
+        current_line++;
+    }
+
+    // If the target line is beyond the end of the file, append new lines and the content.
+    while (current_line <= line_number) {
+        if (current_line == line_number) {
+            fprintf(temp, "%s\n", new_content);
+        } else {
+            fprintf(temp, "\n");
+        }
+        current_line++;
+    }
+
+    fclose(file);
+    fclose(temp);
+
+    // Replace the original file with the temporary file.
+    if (remove(filename) != 0 || rename("temp.txt", filename) != 0) {
+        perror("Error replacing the original file");
     }
 }
 
-/*pipeline implementation*/
 
-int pipeline(FILE *instruction_file, char*[] commands, int IC)
+int detect_hazard(DecodeBuffers *decode_buf, ExecuteBuffer *execute_buf)
 {
-    int clock=0; 
-    int pc=0; 
-    int num_executed_commands=0;
-    int first_command=0; 
-    int last_command = 0;  
-   
-    while(num_executed_commands<IC)  // as long as not all commands have been executed
-    {   
-        for (int j = first_command; j <= last_command; j++)
-            {   
-                commands[j].state += 1;
-                state_machine(commands[j].state, pc);  // run the state machine unless you hit a stall
-                if (command[j].state == WB)  // command has finished
-                    {   
-                        first_command++; 
-                        num_executed_commands++;
-                    }
+       // Data Hazard Detection
+    if (decode_buf->rs == execute_buf->rd_value && execute_buf->rd_value != 0) {   // rs1 is in use 
+        printf("Data hazard detected: Read-after-Write (RAW) on rs1\n");
+        return 1; // Stall
+    }
+    if (decode_buf->rt == execute_buf->rd_value && execute_buf->rd_value != 0) { // rs1 is in use 
+        printf("Data hazard detected: Read-after-Write (RAW) on rs2\n");
+        return 1; // Stall
+    }
 
-            }
+    // Control Hazard Detection
+    if (decode_buf->is_branch && !execute_buf->branch_resolved) {
+        printf("Control hazard detected: Branch not resolved\n");
+        return 1; // Stall
+    }
+
+    // Structural Hazard Detection
+    if (execute_buf->mem_busy) {
+        printf("Structural hazard detected: Memory unit busy\n");
+        return 1; // Stall
+    } 
+
+    // No hazards detected
+    return 0;
+}int state_machine(Core core, Command com, int stall, int num) {
+    int hazard;
     
-    clock +=1; 
-    last_command+=1; 
+    switch (com.state) {
+    case FETCH:
+        if (fetch_instruction(&core, core.current_instruction) == -1) {
+            return -1; // No more instructions to fetch
+        }
+        modify_file_line("pipeline_output.txt", num + 1, "f ");
+        break;
+
+    case DECODE:
+        // hazard = detect_hazard(&core->decode_buf, &core->execute_buf);
+        // if (hazard) {
+        //     stall = 1; // Set stall flag
+        //     modify_file_line("pipeline_output.txt", num + 1, "- "); // Indicate stall
+        //     return STALL;
+        // }
+        decode(&core, &com, core.instruction_file[num].inst );
+        modify_file_line("pipeline_output.txt", num + 1, "d ");
+        break;
+
+    case EXEC:
+        execute(&core, &com);
+        modify_file_line("pipeline_output.txt", num + 1, "e ");
+        break;
+
+    case MEM:
+        memory_state(&com, &core);
+        modify_file_line("pipeline_output.txt", num + 1, "m ");
+        break;
+
+    case WB:
+        writeback_state(&com, &core);
+        modify_file_line("pipeline_output.txt", num + 1, "wb");
+        break;
+
+    case STALL:
+        // Check if the stall condition has resolved
+        // hazard = detect_hazard(&core->decode_buf, &core->execute_buf);
+        if (!hazard) {
+            stall = 0;          // Clear the stall flag
+            com.state = DECODE; // Retry decoding
+        }
+        return STALL;
+
+    default:
+        fprintf(stderr, "Error: Invalid pipeline state: %d\n", com.state);
+        return -1;
     }
+
+    return 0; // Indicate success
+}
+
+
+// Function to load instructions from a file into the Core structure
+int load_instructions(Core* core, const char* filename) {
+    
+}
+
+
+// Example initialization
+Core initialize_core(int core_id, char * filename) {
+    
+    Core core = {
+        .core_id = core_id,
+        .pc = 0,
+        //.IC = IC,
+       // .instruction_file = (Command*)malloc(sizeof(Command) * IC),
+        .decode_buf = {0}, // Adjust based on DecodeBuffers initialization
+        .execute_buf = {0}, // Adjust based on ExecuteBuffer initialization
+        .mem_buf = {0},     // Adjust based on MemBuffer initialization
+        .register_file = {{0}}, // Initialize register file to zero
+        .dsram = {0}            // Adjust based on DSRAM initialization
+    };
+
+    FILE* file = fopen(filename, "r");
+    if (!file) {
+        perror("Failed to open file");
+    }
+
+    int instruction_count = 0;
+    char line[MAX_LINE_LENGTH];
+
+    while (fgets(line, sizeof(line), file)) {
+        // Remove trailing newline character
+        line[strcspn(line, "\n")] = '\0';
+
+        // Allocate space for the new instruction if needed
+        if (instruction_count >= core.IC) {
+            // Reallocate to expand the instruction array
+            core.instruction_file = realloc(core.instruction_file, sizeof(Command) * (instruction_count + 1));
+            if (!core.instruction_file) {
+                perror("Failed to reallocate memory for instructions");
+                fclose(file);
+            }
+            core.IC++;
+        }
+
+        // Copy the line into the instruction's `inst` field
+        strncpy(core.instruction_file[instruction_count].inst, line, sizeof(core.instruction_file[instruction_count].inst) - 1);
+        core.instruction_file[instruction_count].inst[sizeof(core.instruction_file[instruction_count].inst) - 1] = '\0'; // Null-terminate
+        core.instruction_file[instruction_count].state = 0;
+        // Initialize control_signals as needed
+        instruction_count++;
+    }
+
+    fclose(file);
+
+    return core;
+}
+int pipeline(char* filename, int core_id) {
+    int clock = 0;
+    int num_executed_commands = 0;
+    int first_command = 0;
+    int last_command = 0;
+    int stall = 0;
+    int output;
+    Core core= initialize_core(core_id, filename); 
+    int IC=core.IC; 
+    // Print the content of the array
+   
+    for (int i = 0; i < IC; i++) {
+        printf("%s\n", core.instruction_file[i].inst);
+        printf("%d\n", core.instruction_file[i].state);
+    }
+
+
+    printf("%d Loaded Instructions:\n", IC);
+    printf("\n");
+    const int max_cycles = 10000; // Prevent infinite loops
+    int i;  // Line index to be retrieved 
+    char line[MAX_LINE_LENGTH];  // Array to store the line
+    while (num_executed_commands < core . IC) {
+
+        // Process commands in the pipeline
+        for (int j = first_command; j <= last_command; j++) {
+
+            // Handle Write-back (WB) state
+            if (core.instruction_file[j].state == WB) {
+                first_command++;          // Move first command forward
+                num_executed_commands++;  // Count completed commands
+            }
+            printf("Command state: %d \n", core.instruction_file[j].state);
+            printf("Command instruction: %s \n", core.instruction_file[j].inst);
+            output = state_machine(core, core.instruction_file[j], stall, j);
+
+
+            // Advance command state if no stall
+            if (core.instruction_file[j].state < WB) {  //!stall && 
+
+                core.instruction_file[j].state++;  // Advance to next stage
+            }
+
+
+            // // Handle end of instruction fetch
+            // if (output == -1) {
+            //     stall = 0; // Clear stall if no more instructions
+            //     break;
+            // }
+        }
+
+        printf("\n\n");
+
+        // Increment the clock cycle
+        clock++;
+
+        // If no stall and more commands exist, load the next command
+        if (!stall && last_command < core.IC - 1) {
+            last_command++;
+            modify_file_line("pipeline_output.txt", last_command + 1, "  ");
+        }
+
+        // Prevent infinite loops by capping the clock
+        if (clock > max_cycles) {
+            fprintf(stderr, "Error: Exceeded maximum cycles. Terminating to prevent infinite loop.\n");
+            break;
+        }
+    }
+
+    return clock;  // Return the number of clock cycles used
 }
 
 
 int main() {
-    // Open the instruction memory file
-    FILE *imem = fopen("imem0.txt", "r");
-    if (imem == NULL) {
-        perror("Error opening instruction memory file");
+    // Open instruction memory file
+
+    
+    FILE *file = fopen("pipeline_output.txt", "w");
+    if (file == NULL) {
+        perror("Error opening file");
+        fclose(file);
         return EXIT_FAILURE;
     }
+    fclose(file);
 
-    int pc = 0; // Initialize the program counter
-    char *instruction;
-    // Fetch, decode, execute, and print instructions until the halt signal
-    printf("Fetching, decoding, executing, and writing back instructions from imem0.txt:\n");
-    
+    // Count instructions and allocate memory for commands
+    //Command *commands = malloc(IC * sizeof(Command));
+    // Call pipeline function to execute the instructions
+    int clock_cycles = pipeline("imem0.txt", 1);
 
-    fclose(imem); // Close the instruction memory file
-    return 0;
+    // Output the result
+    printf("Pipeline executed in %d clock cycles\n", clock_cycles);
+
+    // Clean up
+    //free(commands);
+    //fclose(imem);
+
+    return EXIT_SUCCESS;
 }
