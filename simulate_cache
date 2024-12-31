@@ -1,0 +1,113 @@
+#include "cache.h"
+#include <stdio.h>
+#include <stdlib.h>
+
+// Define the number of caches
+#define NUM_CACHES 2
+
+// Function to initialize all caches
+
+
+
+// Function to simulate cache operations
+void simulate_cache_operations(DSRAM caches[], TSRAM tsrams[]) {
+    uint32_t data;
+    uint32_t address;
+    bool hit;
+
+    // Test cache reads and writes for different addresses
+    printf("Simulating cache operations...\n");
+
+    // First cache access (Write to address 0x00001000)
+    address = 0x00001000;
+    printf("\nWriting data to address 0x%08X...\n", address);
+    cache_write(&caches[0], &tsrams[0], address, 42);
+
+    // Second cache access (Read from address 0x00001000)
+    address = 0x00001000;
+    hit = cache_read(&caches[0], &tsrams[0], address, &data);
+    printf("Read from address 0x%08X: Data = %u (Hit: %s)\n", address, data, hit ? "Yes" : "No");
+
+    // Third cache access (Write to address 0x00002000)
+    address = 0x00002000;
+    printf("\nWriting data to address 0x%08X...\n", address);
+    cache_write(&caches[1], &tsrams[1], address, 84);
+
+    // Fourth cache access (Read from address 0x00002000)
+    address = 0x00002000;
+    hit = cache_read(&caches[1], &tsrams[1], address, &data);
+    printf("Read from address 0x%08X: Data = %u (Hit: %s)\n", address, data, hit ? "Yes" : "No");
+
+    // Fifth cache access (Write to address 0x00001000 for cache 2)
+    address = 0x00001000;
+    printf("\nWriting data to address 0x%08X in cache 2...\n", address);
+    cache_write(&caches[2], &tsrams[2], address, 100);
+
+    // Sixth cache access (Read from address 0x00001000 in cache 2)
+    address = 0x00001000;
+    hit = cache_read(&caches[2], &tsrams[2], address, &data);
+    printf("Read from address 0x%08X in cache 2: Data = %u (Hit: %s)\n", address, data, hit ? "Yes" : "No");
+
+    // Bus snooping operations (simulating bus reads and invalidates)
+    printf("\nSimulating bus snooping operations...\n");
+
+    // Simulate a bus read operation (invalidate caches with address 0x00001000)
+    address = 0x00001000;
+    snoop_bus(&caches[0], &tsrams[0], BUS_READ, address, &data);
+
+    // Simulate a bus write-back operation (for address 0x00002000)
+    address = 0x00002000;
+    snoop_bus(&caches[1], &tsrams[1], BUS_WRITE_BACK, address, &data);
+
+    // Simulate a bus invalidate operation (for address 0x00001000)
+    address = 0x00001000;
+    snoop_bus(&caches[3], &tsrams[3], BUS_INVALIDATE, address, &data);
+
+    // Simulate another cache read (after snooping operations)
+    address = 0x00001000;
+    hit = cache_read(&caches[0], &tsrams[0], address, &data);
+    printf("Read from address 0x%08X after snooping: Data = %u (Hit: %s)\n", address, data, hit ? "Yes" : "No");
+
+    // Simulate cache writes after snooping
+    address = 0x00002000;
+    printf("\nWriting data to address 0x%08X...\n", address);
+    cache_write(&caches[1], &tsrams[1], address, 55);
+
+    //Log the final cache states
+    log_cache_state(&caches[0], &tsrams[0]);
+    log_cache_state(&caches[1], &tsrams[1]);
+    log_cache_state(&caches[2], &tsrams[2]);
+    log_cache_state(&caches[3], &tsrams[3]);
+}
+
+int main() {
+
+    // Declare and initialize DSRAM and TSRAM
+// Declare arrays of DSRAM and TSRAM (assuming 4 caches for example)
+    DSRAM caches[4];
+    TSRAM tsrams[4];
+
+    // Initialize DSRAM and TSRAM caches
+    initialize_DSRAM(&caches[0], "dsram_log_0.txt");
+    initialize_DSRAM(&caches[1], "dsram_log_1.txt");
+    initialize_DSRAM(&caches[2], "dsram_log_2.txt");
+    initialize_DSRAM(&caches[3], "dsram_log_3.txt");
+
+    initialize_TSRAM(&tsrams[0], "tsram_log_0.txt");
+    initialize_TSRAM(&tsrams[1], "tsram_log_1.txt");
+    initialize_TSRAM(&tsrams[2], "tsram_log_2.txt");
+    initialize_TSRAM(&tsrams[3], "tsram_log_3.txt");
+
+    // Simulate cache operations
+    simulate_cache_operations(caches, tsrams);
+
+    return 0;
+
+
+
+
+
+    // Continue with further processing...
+    return 0;
+
+}
