@@ -13,10 +13,10 @@
 #define TAG_BITS (32 - INDEX_BITS - BLOCK_OFFSET_BITS) // Assuming 32-bit address
 
 
-#define INVALID   0  // Cache line is invalid
-#define SHARED    1  // Cache line is valid and shared with other caches
-#define EXCLUSIVE 2  // Cache line is valid and only present in this cache
-#define MODIFIED  3  // Cache line is valid, modified, and dirty
+//#define INVALID   0  // Cache line is invalid
+//#define SHARED    1  // Cache line is valid and shared with other caches
+//#define EXCLUSIVE 2  // Cache line is valid and only present in this cache
+//#define MODIFIED  3  // Cache line is valid, modified, and dirty
 
 // Main Memory (1MB)
 extern uint32_t main_memory[MAIN_MEMORY_SIZE];
@@ -24,11 +24,14 @@ extern uint32_t main_memory[MAIN_MEMORY_SIZE];
 // Cache Line structure
 typedef struct cacheLine{
     uint32_t data[BLOCK_SIZE];  // Data: 4 words (32 bits each)
-    uint32_t tag;               // Tag for comparison
-    bool valid;                 // Valid bit
-    bool dirty;                 // Dirty bit (used for write-back)
-    int state;           // Coherence state
 } CacheLine;
+
+typedef enum {
+    INVALID,
+    SHARED,
+    EXCLUSIVE,
+    MODIFIED
+} MESIState;
 
 typedef enum {
     BUS_READ,          // Request for shared read
@@ -44,6 +47,19 @@ typedef struct {
     FILE *logfile;
 } DSRAM;
 
+typedef struct {
+    uint32_t tag;               
+    MESIState mesi_state;           // Coherence state
+} CacheLine_TSRAM;
+
+typedef struct {
+    CacheLine_TSRAM cache[NUM_BLOCKS]; // Cache array with 64 blocks
+    uint64_t cycle_count;        // Total cycles counter
+    FILE *logfile;
+} TSRAM;
+
+
+
 // Function Prototypes
 
 // Function to initialize the DSRAM (cache) with the value 2
@@ -56,7 +72,7 @@ void init_main_memory();
 void get_cache_address_parts(uint32_t address, uint32_t *tag, uint32_t *index, uint32_t *block_offset);
 
 // Function to log the cache state to a text file
-void log_cache_state(DSRAM *dsram);
+void log_cache_state(DSRAM *dsram, TSRAM *tsram);
 
 // Function to write the cache state to a file
 //void write_cache_to_file(DSRAM *dsram);
@@ -65,13 +81,17 @@ void log_cache_state(DSRAM *dsram);
 void write_main_memory_to_file(FILE *file);
 
 // Cache read operation, returns true for cache hit
-bool cache_read(DSRAM *dsram, uint32_t address, uint32_t *data);
+bool cache_read(DSRAM *dsram, TSRAM *tsram, uint32_t address, uint32_t *data);
 
 // Cache write operation
-void cache_write(DSRAM *dsram, uint32_t address, uint32_t data);
+void cache_write(DSRAM *dsram, TSRAM *tsram, uint32_t address, uint32_t data);
 
 int read_from_main_memory(int *main_memory, int address);
 
-void snoop_bus(DSRAM *dsram, BusOperation op, uint32_t address, uint32_t *data_out);
+void snoop_bus(DSRAM *dsram, TSRAM *tsram, BusOperation op, uint32_t address, uint32_t *data_out);
 
+void init_caches(DSRAM dsrams[], TSRAM tsrams[]);
 
+void initialize_DSRAM(DSRAM *dsram, const char *log_filename);
+
+void initialize_TSRAM(TSRAM *tsram, const char *log_filename);
