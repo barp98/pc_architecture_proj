@@ -1,4 +1,4 @@
-#include "../headers/cache.h"
+#include "cache.h"
 
 
 #define MAIN_MEMORY_SIZE (1 << 20) // 2^20 words (1MB of memory)
@@ -10,74 +10,172 @@
 #define TAG_BITS (32 - INDEX_BITS - BLOCK_OFFSET_BITS) // Assuming 32-bit address
 
 
-void snoop_bus(DSRAM *dsram, BusOperation op, uint32_t address, uint32_t *data_out) {
+// Function to log cache state to a text file
+void log_mesibus(MESI_bus *bus, int cycle) {
+    // Log DSRAM state
+    if (bus->logfile == NULL) {
+        printf("Error: Logfile not initialized for DSRAM.\n");
+        return; // Prevent further execution if logfile is not available
+    }
+
+    // Log the bus details in the required format
+    fprintf(bus->logfile, "%d   %d    %d   0x%08X   %d       %d\n", 
+            cycle, 
+            bus->bus_origid, 
+            bus->bus_cmd, 
+            bus->bus_addr, 
+            bus->bus_data, 
+            bus->bus_shared);
+}
+
+void snoop_bus(DSRAM *dsram, TSRAM *tsram, BusOperation op, uint32_t address, uint32_t *data_out, MESI_bus *bus) {
     uint32_t tag, index, block_offset;
     get_cache_address_parts(address, &tag, &index, &block_offset);
 
-    CacheLine *line = &dsram->cache[index];
-    if (line->valid && line->tag == tag) {
+    // Debug print to see cache address parts
+    printf("address:%08X, tag:%d, index:%d, offset: %d\n", address, tag, index, block_offset);
+
+    CacheLine *dsram_line = &dsram->cache[index];
+    CacheLine_TSRAM *tsram_line = &tsram->cache[index];
+
+    // Process cache line based on MESI state
+    if (tsram_line->mesi_state != INVALID && tsram_line->tag == tag) {
         switch (op) {
             case BUS_READ:
-                if (line->state == MODIFIED) {
+                if (tsram_line->mesi_state == MODIFIED) {
                     // Write back to memory and transition to SHARED
                     printf("Snooping BUS_READ: Writing back modified data.\n");
                     for (int i = 0; i < BLOCK_SIZE; i++) {
-                        main_memory[(address / BLOCK_SIZE) * BLOCK_SIZE + i] = line->data[i];
+                        main_memory[(address / BLOCK_SIZE) * BLOCK_SIZE + i] = dsram_line->data[i];
                     }
-                    line->dirty = false;
-                    line->state = SHARED;
-                } else if (line->state == EXCLUSIVE) {
+                    tsram_line->mesi_state = SHARED;
+
+                    // Update MESI bus structure for BUS_READ operation
+                    bus->bus_cmd = 1; // BUS_RD
+                    bus->bus_addr = address;
+                    bus->bus_data = dsram_line->data[0]; // Assuming writing back the first word
+                    bus->bus_shared = 1;  // Shared because other cores might have the data
+                } else if (tsram_line->mesi_state == EXCLUSIVE || tsram_line->mesi_state == SHARED) {
                     // Transition to SHARED
                     printf("Snooping BUS_READ: Transitioning to SHARED.\n");
-                    line->state = SHARED;
+                    tsram_line->mesi_state = SHARED;
+
+                    // Update MESI bus structure for BUS_READ operation
+                    bus->bus_cmd = 1; // BUS_RD
+                    bus->bus_addr = address;
+                    bus->bus_shared = 1;  // Set shared flag since other cores may also have the data
                 }
                 break;
 
             case BUS_READ_EXCLUSIVE:
                 // Invalidate the cache line
                 printf("Snooping BUS_READ_EXCLUSIVE: Invalidating cache line.\n");
-                line->valid = false;
-                line->state = INVALID;
+                tsram_line->mesi_state = INVALID;
+
+                // Update MESI bus structure for BUS_READ_EXCLUSIVE operation
+                bus->bus_cmd = 2; // BUS_RDX (Exclusive read)
+                bus->bus_addr = address;
+                bus->bus_shared = 0;  // Not shared anymore
                 break;
 
             case BUS_INVALIDATE:
                 // Invalidate the cache line
                 printf("Snooping BUS_INVALIDATE: Invalidating cache line.\n");
-                line->valid = false;
-                line->state = INVALID;
+                tsram_line->mesi_state = INVALID;
+
+                // Update MESI bus structure for BUS_INVALIDATE operation
+                bus->bus_cmd = 3; // FLUSH (invalidate)
+                bus->bus_addr = address;
+                bus->bus_shared = 0;  // Not shared anymore
                 break;
 
             case BUS_WRITE_BACK:
-                if (line->state == MODIFIED) {
+                if (tsram_line->mesi_state == MODIFIED) {
                     // Write back the modified data
                     printf("Snooping BUS_WRITE_BACK: Writing back modified data.\n");
                     for (int i = 0; i < BLOCK_SIZE; i++) {
-                        main_memory[(address / BLOCK_SIZE) * BLOCK_SIZE + i] = line->data[i];
+                        main_memory[(address / BLOCK_SIZE) * BLOCK_SIZE + i] = dsram_line->data[i];
                     }
-                    line->dirty = false;
-                    line->state = INVALID;
+                    tsram_line->mesi_state = INVALID;
+
+                    // Update MESI bus structure for BUS_WRITE_BACK operation
+                    bus->bus_cmd = 3; // FLUSH
+                    bus->bus_addr = address;
+                    bus->bus_data = dsram_line->data[0]; // Write back first word data
+                    bus->bus_shared = 0;  // After write-back, data is no longer shared
+                } else if (tsram_line->mesi_state == SHARED) {
+                    // No need to write back as other caches may already have it
+                    printf("Snooping BUS_WRITE_BACK: No write needed, already shared.\n");
+
+                    // Update MESI bus structure for BUS_WRITE_BACK operation
+                    bus->bus_cmd = 3; // FLUSH
+                    bus->bus_addr = address;
+                    bus->bus_shared = 1;  // Data is shared across caches
                 }
                 break;
 
             default:
                 printf("Unknown bus operation.\n");
         }
+    } else if (op == BUS_READ || op == BUS_READ_EXCLUSIVE || op == BUS_INVALIDATE || op == BUS_WRITE_BACK) {
+        // No valid line found or the line is not for this tag
+        printf("No valid cache line found for the given address or state mismatch.\n");
+
+        // Update MESI bus structure for invalid cache line access
+        bus->bus_cmd = 0; // No command
+        bus->bus_addr = address;
+        bus->bus_shared = 0;  // No data shared
     }
+}
+
+void initialize_mesi_bus(MESI_bus *bus, const char *log_filename) {
+    bus->bus_origid = 0;  // Set the originator of the bus transaction
+    bus->bus_cmd = 0;        // Set the bus command (e.g., BUS_RD, BUS_RDX, etc.)
+    bus->bus_addr = 0;       // Set the address for the bus operation
+    bus->bus_data = 0;          // Set the data for write operations (optional)
+    bus->bus_shared = 0;      // Set shared state for read operations (1 if shared, 0 if exclusive)
+    bus->logfile = fopen(log_filename, "w");
+    if (bus->logfile == NULL) {
+        perror("Error opening log file for DSRAM");
+        exit(EXIT_FAILURE);
+    }
+    fprintf(bus->logfile, "Cyc Orig Cmd    Addr      Data  Shared\n");	
 }
 
 // Main Memory (2^20 words)
 uint32_t main_memory[MAIN_MEMORY_SIZE];
 
-// Function to initialize the DSRAM (cache) with the value 2
-void init_dsr_cache(DSRAM *dsram) {
-    dsram->cycle_count = 0;  // Initialize cycle count to zero
+void initialize_DSRAM(DSRAM *dsram, const char *log_filename) {
+    // Initialize cache data
     for (int i = 0; i < NUM_BLOCKS; i++) {
-        dsram->cache[i].valid = false;   // Initially invalid
-        dsram->cache[i].dirty = false;   // Initially not dirty
-        // Initialize all data in the cache block to 2
         for (int j = 0; j < BLOCK_SIZE; j++) {
-            dsram->cache[i].data[j] = 0; // Initialize all words to 2
+            dsram->cache[i].data[j] = 0;  // Clear data
         }
+    }
+    dsram->cycle_count = 0;  // Reset cycle count
+
+    // Open logfile for DSRAM
+    dsram->logfile = fopen(log_filename, "w");
+    if (dsram->logfile == NULL) {
+        perror("Error opening log file for DSRAM");
+        exit(EXIT_FAILURE);
+    }
+}
+
+// Function to initialize TSRAM
+void initialize_TSRAM(TSRAM *tsram, const char *log_filename) {
+    // Initialize cache state and tags
+    for (int i = 0; i < NUM_BLOCKS; i++) {
+        tsram->cache[i].tag = 0;  // Clear the tag
+        tsram->cache[i].mesi_state = INVALID;  // Set state to INVALID
+    }
+    tsram->cycle_count = 0;  // Reset cycle count
+
+    // Open logfile for TSRAM
+    tsram->logfile = fopen(log_filename, "w");
+    if (tsram->logfile == NULL) {
+        perror("Error opening log file for TSRAM");
+        exit(EXIT_FAILURE);
     }
 }
 
@@ -96,47 +194,53 @@ void get_cache_address_parts(uint32_t address, uint32_t *tag, uint32_t *index, u
 }
 
 // Function to log cache state to a text file
-void log_cache_state(DSRAM *dsram, FILE *logfile) {
-    fprintf(logfile, "Cache State:\n");
-    fprintf(logfile, "Block Number | Valid | Dirty | Tag        | Data\n");
-    fprintf(logfile, "---------------------------------------------------\n");
+void log_cache_state(DSRAM *dsram, TSRAM *tsram) {
+    // Log DSRAM state
+    if (dsram->logfile == NULL) {
+        printf("Error: Logfile not initialized for DSRAM.\n");
+        return; // Prevent further execution if logfile is not available
+    }
+
+    fprintf(dsram->logfile, "DSRAM Cache State:%d\n", dsram->cycle_count);
+    fprintf(dsram->logfile, "Block Number |Data[0]    Data[1]    Data[2]    Data[3]\n");
+    fprintf(dsram->logfile, "---------------------------------------------------\n");
+
     for (int i = 0; i < NUM_BLOCKS; i++) {
-        CacheLine *line = &dsram->cache[i];
-        fprintf(logfile, "%12d | %5d | %5d | 0x%08X | ", i, line->valid, line->dirty, line->tag);
+        CacheLine *dsram_line = &dsram->cache[i];
+        fprintf(dsram->logfile, "%12d | ", i);  // Log block number
+        
         for (int j = 0; j < BLOCK_SIZE; j++) {
-            fprintf(logfile, "0x%08X ", line->data[j]);
+            fprintf(dsram->logfile, "0x%08X ", dsram_line->data[j]);  // Log data in each block
         }
-        fprintf(logfile, "\n");
-    }
-    fprintf(logfile, "---------------------------------------------------\n");
-    fflush(logfile);
-}
-
-// Function to write cache state to a separate text file
-
-void write_cache_to_file(DSRAM *dsram) {
-    FILE *cachefile = fopen("log_files/cache_state_log.txt", "w"); 
-    if (cachefile == NULL) {
-        perror("Error opening cache state file");
-        return;
+        fprintf(dsram->logfile, "\n");
     }
 
-    fprintf(cachefile, "Cache State:\n");
+    fprintf(dsram->logfile, "---------------------------------------------------\n");
+    fflush(dsram->logfile);
+
+    // Log TSRAM state
+    if (tsram->logfile == NULL) {
+        printf("Error: Logfile not initialized for TSRAM.\n");
+        return; // Prevent further execution if logfile is not available
+    }
+
+    fprintf(tsram->logfile, "TSRAM Cache State:\n");
+    fprintf(tsram->logfile, "Block Number | MESI State | Tag        \n");
+    fprintf(tsram->logfile, "---------------------------------------------------\n");
+
     for (int i = 0; i < NUM_BLOCKS; i++) {
-        CacheLine *line = &dsram->cache[i];
-        fprintf(cachefile, "Block %d: ", i);
-        fprintf(cachefile, "Valid: %d, Dirty: %d, Tag: 0x%X, Data: ", line->valid, line->dirty, line->tag);
-        for (int j = 0; j < BLOCK_SIZE; j++) {
-            fprintf(cachefile, "0x%08X ", line->data[j]);
-        }
-        fprintf(cachefile, "\n");
+        CacheLine_TSRAM *tsram_line = &tsram->cache[i];
+        fprintf(tsram->logfile, "%12d | %-11s | 0x%08X\n", 
+                i, 
+                (tsram_line->mesi_state == INVALID ? "INVALID" :
+                 (tsram_line->mesi_state == SHARED ? "SHARED" :
+                 (tsram_line->mesi_state == EXCLUSIVE ? "EXCLUSIVE" : "MODIFIED"))),
+                tsram_line->tag);  // Log MESI state and tag
     }
-    fprintf(cachefile, "End of Cache State\n\n");
 
-    fclose(cachefile);  // Close the file after writing
+    fprintf(tsram->logfile, "---------------------------------------------------\n");
+    fflush(tsram->logfile);
 }
-
-
 
 int read_from_main_memory(int *main_memory, int address) {
     // Check if the address is within the valid range
@@ -159,16 +263,20 @@ void write_main_memory_to_file(FILE *file) {
     fprintf(file, "End of Main Memory State\n\n");
 }
 
-bool cache_read(DSRAM *dsram, uint32_t address, uint32_t *data, FILE *logfile) {
+bool cache_read(DSRAM *dsram, TSRAM *tsram, uint32_t address, uint32_t *data, MESI_bus *mesi_bus) {
     uint32_t tag, index, block_offset;
     get_cache_address_parts(address, &tag, &index, &block_offset);
 
-    CacheLine *line = &dsram->cache[index];
+    CacheLine *dsram_line = &dsram->cache[index];
+    CacheLine_TSRAM *tsram_line = &tsram->cache[index];
     uint64_t cycles = 0;
 
-    if (line->valid && line->tag == tag) {
+    // Snooping the bus to ensure cache coherence before reading
+    snoop_bus(dsram,tsram, BUS_READ, address, data, mesi_bus);
+
+    if (tsram_line->mesi_state == INVALID  && tsram_line->tag == tag) {
         // Cache hit, return the data (hit takes 1 cycle)
-        *data = line->data[block_offset];
+        *data = dsram_line->data[block_offset];
         printf("Cache hit! Data: %u\n", *data);
         cycles = 1;  // 1 cycle for cache hit
     } else {
@@ -180,11 +288,12 @@ bool cache_read(DSRAM *dsram, uint32_t address, uint32_t *data, FILE *logfile) {
 
         // Fetch the entire block from main memory
         for (int i = 0; i < BLOCK_SIZE; i++) {
-            line->data[i] = main_memory[block_start + i];
+            dsram_line->data[i] = main_memory[block_start + i];
         }
-        line->tag = tag;
-        line->valid = true;
-        *data = line->data[block_offset];
+        tsram_line->tag = tag;
+        tsram_line->mesi_state = SHARED;
+        // Return the data from the correct block offset
+        *data = dsram_line->data[block_offset];
 
         cycles = 16;  // Assume 16 cycles for fetching a block from main memory
     }
@@ -193,43 +302,54 @@ bool cache_read(DSRAM *dsram, uint32_t address, uint32_t *data, FILE *logfile) {
     printf("Cycles after operation: %lu\n", dsram->cycle_count);  // Print total cycles after each operation
 
     // Log the cache state after this operation
-    log_cache_state(dsram, logfile);
-    write_cache_to_file(dsram); // Write cache state to separate file
+    log_cache_state(dsram, tsram);
+    //write_cache_to_file(dsram); // Write cache state to separate file
 
     return (cycles == 1);  // Return true for cache hit
 }
 
-void cache_write(DSRAM *dsram, uint32_t address, uint32_t data, FILE *logfile) {
+void cache_write(DSRAM *dsram, TSRAM *tsram, uint32_t address, uint32_t data, MESI_bus *mesi_bus) {
     uint32_t tag, index, block_offset;
     get_cache_address_parts(address, &tag, &index, &block_offset);
 
-    CacheLine *line = &dsram->cache[index];
+    CacheLine *dsram_line = &dsram->cache[index];
+    CacheLine_TSRAM *tsram_line = &tsram->cache[index];
     uint64_t cycles = 0;
+    // Snooping the bus to maintain cache coherence
+    snoop_bus(dsram, tsram, BUS_WRITE_BACK, address, &data, mesi_bus);
 
     // Check if it's a cache hit
-    if (line->valid && line->tag == tag) {
-        // Cache hit, write data to the cache line
-        line->data[block_offset] = data;
-        line->dirty = true;  // Set dirty bit because the cache line has been modified
-        printf("Cache write hit! Data written to index %u, block offset %u\n", index, block_offset);
-        cycles = 1;  // 1 cycle for cache write hit
+    if (tsram_line->mesi_state != INVALID && tsram_line->tag == tag) {
+        if (tsram_line->mesi_state == EXCLUSIVE) {
+            // Cache hit in EXCLUSIVE state, write data to the cache
+            dsram_line->data[block_offset] = data;
+            tsram_line->mesi_state = MODIFIED;  // Transition to MODIFIED because the cache line has been updated
+            printf("Cache write hit (EXCLUSIVE)! Data written to index %u, block offset %u\n", index, block_offset);
+            cycles = 1;  // 1 cycle for cache write hit
+        } else {
+            // Cache hit, write data to the cache in MODIFIED or SHARED state
+            dsram_line->data[block_offset] = data;
+            tsram_line->mesi_state = MODIFIED;  // Set dirty bit because the cache line has been modified
+            printf("Cache write hit! Data written to index %u, block offset %u\n", index, block_offset);
+            cycles = 1;  // 1 cycle for cache write hit
+        }
     } else {
         // Cache miss, allocate a new block in the cache
         // Check if the cache line is dirty and needs to be written back to memory
-        if (line->valid && line->dirty) {
+        if (tsram_line->mesi_state != INVALID && tsram_line->mesi_state == MODIFIED) {
             uint32_t block_start_address = 
-                (line->tag << (INDEX_BITS + BLOCK_OFFSET_BITS)) | (index << BLOCK_OFFSET_BITS);
+                (tsram_line->tag << (INDEX_BITS + BLOCK_OFFSET_BITS)) | (index << BLOCK_OFFSET_BITS);
             
             printf("Writing back dirty data to main memory at addresses: 0x%08X - 0x%08X\n",
                    block_start_address, block_start_address + BLOCK_SIZE - 1);
-            fprintf(logfile, "Writing back dirty data to main memory at addresses: 0x%08X - 0x%08X\n",
+            fprintf(dsram->logfile, "Writing back dirty data to main memory at addresses: 0x%08X - 0x%08X\n",
                     block_start_address, block_start_address + BLOCK_SIZE - 1);
 
             // Update main memory and log each word being written back
             for (int i = 0; i < BLOCK_SIZE; i++) {
-                main_memory[block_start_address + i] = line->data[i];
-                fprintf(logfile, "Main Memory [0x%08X] = 0x%08X\n",
-                        block_start_address + i, line->data[i]);
+                main_memory[block_start_address + i] = dsram_line->data[i];
+                fprintf(dsram->logfile, "Main Memory [0x%08X] = 0x%08X\n",
+                        block_start_address + i, dsram_line->data[i]);
             }
         }
 
@@ -237,12 +357,12 @@ void cache_write(DSRAM *dsram, uint32_t address, uint32_t data, FILE *logfile) {
         uint32_t block_start_address = 
             (tag << (INDEX_BITS + BLOCK_OFFSET_BITS)) | (index << BLOCK_OFFSET_BITS);
         for (int i = 0; i < BLOCK_SIZE; i++) {
-            line->data[i] = main_memory[block_start_address + i];
+            dsram_line->data[i] = main_memory[block_start_address + i];
         }
-        line->valid = true;  // Mark the cache line as valid
-        line->tag = tag;  // Update the tag
-        line->data[block_offset] = data;  // Write the new data to the cache
-        line->dirty = true;  // Set dirty bit because the cache line has been modified
+
+        tsram_line->tag = tag;  // Update the tag
+        dsram_line->data[block_offset] = data;  // Write the new data to the cache
+        tsram_line->mesi_state = MODIFIED;  // Set dirty bit because the cache line has been modified
 
         printf("Cache write miss! Data written to index %u, block offset %u\n", index, block_offset);
         cycles = 16;  // Assume 16 cycles for cache miss (fetch and write)
@@ -252,7 +372,7 @@ void cache_write(DSRAM *dsram, uint32_t address, uint32_t data, FILE *logfile) {
     printf("Cycles after write: %lu\n", dsram->cycle_count);  // Print total cycles after each write operation
 
     // Log the cache state after this operation
-    log_cache_state(dsram, logfile);
+    log_cache_state(dsram, tsram);  // Log both DSRAM and TSRAM states
     //write_cache_to_file(dsram);  // Write cache state to separate file
 }
 
