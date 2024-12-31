@@ -13,9 +13,16 @@
 void snoop_bus(DSRAM *dsram, BusOperation op, uint32_t address, uint32_t *data_out) {
     uint32_t tag, index, block_offset;
     get_cache_address_parts(address, &tag, &index, &block_offset);
-
+    printf("%d %d %d %d\n", address,  tag, index, block_offset);
     CacheLine *line = &dsram->cache[index];
+    //printf("%d %d %d\n", line->state, line->tag, line->valid);
+    printf("line tag?: %d, tag?: %d, line->tag == tag?: %d\n", line->tag,tag, line->tag == tag);
+    printf("line valid?:%d\n", line->valid);
+    printf("if is true:? %d\n", line->valid && line->tag == tag);
+
+
     if (line->valid && line->tag == tag) {
+        printf("We are inside! state is: %d, op is: %d\n", line->state, op);
         switch (op) {
             case BUS_READ:
                 if (line->state == MODIFIED) {
@@ -26,7 +33,7 @@ void snoop_bus(DSRAM *dsram, BusOperation op, uint32_t address, uint32_t *data_o
                     }
                     line->dirty = false;
                     line->state = SHARED;
-                } else if (line->state == EXCLUSIVE) {
+                } else if (line->state == EXCLUSIVE || line->state == SHARED) {
                     // Transition to SHARED
                     printf("Snooping BUS_READ: Transitioning to SHARED.\n");
                     line->state = SHARED;
@@ -56,12 +63,18 @@ void snoop_bus(DSRAM *dsram, BusOperation op, uint32_t address, uint32_t *data_o
                     }
                     line->dirty = false;
                     line->state = INVALID;
+                } else if (line->state == SHARED) {
+                    // No need to write back as other caches may already have it
+                    printf("Snooping BUS_WRITE_BACK: No write needed, already shared.\n");
                 }
                 break;
 
             default:
                 printf("Unknown bus operation.\n");
         }
+    } else if (op == BUS_READ || op == BUS_READ_EXCLUSIVE || op == BUS_INVALIDATE || op == BUS_WRITE_BACK) {
+        // No valid line found or the line is not for this tag
+        printf("No valid cache line found for the given address or state mismatch.\n");
     }
 }
 
@@ -96,22 +109,30 @@ void get_cache_address_parts(uint32_t address, uint32_t *tag, uint32_t *index, u
 }
 
 // Function to log cache state to a text file
-void log_cache_state(DSRAM *dsram, FILE *logfile) {
-    fprintf(logfile, "Cache State:\n");
-    fprintf(logfile, "Block Number | Valid | Dirty | Tag        | Data\n");
-    fprintf(logfile, "---------------------------------------------------\n");
+void log_cache_state(DSRAM *dsram) {
+    if (dsram->logfile == NULL) {
+        printf("Error: Logfile not initialized for DSRAM.\n");
+        return; // Prevent further execution if logfile is not available
+    }
+
+    fprintf(dsram->logfile, "Cache State:\n");
+    fprintf(dsram->logfile, "Block Number | Valid | Dirty | Tag        | Data\n");
+    fprintf(dsram->logfile, "---------------------------------------------------\n");
+
     for (int i = 0; i < NUM_BLOCKS; i++) {
         CacheLine *line = &dsram->cache[i];
-        fprintf(logfile, "%12d | %5d | %5d | 0x%08X | ", i, line->valid, line->dirty, line->tag);
+        fprintf(dsram->logfile, "%12d | %5d | %5d | 0x%08X | ", 
+                i, line->valid, line->dirty, line->tag);
+        
         for (int j = 0; j < BLOCK_SIZE; j++) {
-            fprintf(logfile, "0x%08X ", line->data[j]);
+            fprintf(dsram->logfile, "0x%08X ", line->data[j]);
         }
-        fprintf(logfile, "\n");
+        fprintf(dsram->logfile, "\n");
     }
-    fprintf(logfile, "---------------------------------------------------\n");
-    fflush(logfile);
-}
 
+    fprintf(dsram->logfile, "---------------------------------------------------\n");
+    fflush(dsram->logfile);
+}
 // Function to write cache state to a separate text file
 /*
 void write_cache_to_file(DSRAM *dsram) {
@@ -137,7 +158,6 @@ void write_cache_to_file(DSRAM *dsram) {
 }
 */
 
-
 int read_from_main_memory(int *main_memory, int address) {
     // Check if the address is within the valid range
     if (address < 0 || address >= MAIN_MEMORY_SIZE) {
@@ -159,12 +179,15 @@ void write_main_memory_to_file(FILE *file) {
     fprintf(file, "End of Main Memory State\n\n");
 }
 
-bool cache_read(DSRAM *dsram, uint32_t address, uint32_t *data, FILE *logfile) {
+bool cache_read(DSRAM *dsram, uint32_t address, uint32_t *data) {
     uint32_t tag, index, block_offset;
     get_cache_address_parts(address, &tag, &index, &block_offset);
 
     CacheLine *line = &dsram->cache[index];
     uint64_t cycles = 0;
+
+    // Snooping the bus to ensure cache coherence before reading
+    snoop_bus(dsram, BUS_READ, address, data);
 
     if (line->valid && line->tag == tag) {
         // Cache hit, return the data (hit takes 1 cycle)
@@ -193,18 +216,21 @@ bool cache_read(DSRAM *dsram, uint32_t address, uint32_t *data, FILE *logfile) {
     printf("Cycles after operation: %lu\n", dsram->cycle_count);  // Print total cycles after each operation
 
     // Log the cache state after this operation
-    log_cache_state(dsram, logfile);
-    write_cache_to_file(dsram); // Write cache state to separate file
+    log_cache_state(dsram);
+    //write_cache_to_file(dsram); // Write cache state to separate file
 
     return (cycles == 1);  // Return true for cache hit
 }
 
-void cache_write(DSRAM *dsram, uint32_t address, uint32_t data, FILE *logfile) {
+void cache_write(DSRAM *dsram, uint32_t address, uint32_t data) {
     uint32_t tag, index, block_offset;
     get_cache_address_parts(address, &tag, &index, &block_offset);
 
     CacheLine *line = &dsram->cache[index];
     uint64_t cycles = 0;
+
+    // Snooping the bus to maintain cache coherence
+    snoop_bus(dsram, BUS_WRITE_BACK, address, &data);
 
     // Check if it's a cache hit
     if (line->valid && line->tag == tag) {
@@ -222,13 +248,13 @@ void cache_write(DSRAM *dsram, uint32_t address, uint32_t data, FILE *logfile) {
             
             printf("Writing back dirty data to main memory at addresses: 0x%08X - 0x%08X\n",
                    block_start_address, block_start_address + BLOCK_SIZE - 1);
-            fprintf(logfile, "Writing back dirty data to main memory at addresses: 0x%08X - 0x%08X\n",
+            fprintf(dsram->logfile, "Writing back dirty data to main memory at addresses: 0x%08X - 0x%08X\n",
                     block_start_address, block_start_address + BLOCK_SIZE - 1);
 
             // Update main memory and log each word being written back
             for (int i = 0; i < BLOCK_SIZE; i++) {
                 main_memory[block_start_address + i] = line->data[i];
-                fprintf(logfile, "Main Memory [0x%08X] = 0x%08X\n",
+                fprintf(dsram->logfile, "Main Memory [0x%08X] = 0x%08X\n",
                         block_start_address + i, line->data[i]);
             }
         }
@@ -252,7 +278,7 @@ void cache_write(DSRAM *dsram, uint32_t address, uint32_t data, FILE *logfile) {
     printf("Cycles after write: %lu\n", dsram->cycle_count);  // Print total cycles after each write operation
 
     // Log the cache state after this operation
-    log_cache_state(dsram, logfile);
+    log_cache_state(dsram);
     //write_cache_to_file(dsram);  // Write cache state to separate file
 }
 
