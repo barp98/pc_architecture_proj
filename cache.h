@@ -56,19 +56,19 @@ void init_main_memory();
 void get_cache_address_parts(uint32_t address, uint32_t *tag, uint32_t *index, uint32_t *block_offset);
 
 // Function to log the cache state to a text file
-void log_cache_state(DSRAM *dsram, FILE *logfile);
+void log_cache_state(DSRAM *dsram);
 
 // Function to write the cache state to a file
-void write_cache_to_file(DSRAM *dsram);
+//void write_cache_to_file(DSRAM *dsram);
 
 // Function to print the main memory to a text file
 void write_main_memory_to_file(FILE *file);
 
 // Cache read operation, returns true for cache hit
-bool cache_read(DSRAM *dsram, uint32_t address, uint32_t *data, FILE *logfile);
+bool cache_read(DSRAM *dsram, uint32_t address, uint32_t *data);
 
 // Cache write operation
-void cache_write(DSRAM *dsram, uint32_t address, uint32_t data, FILE *logfile);
+void cache_write(DSRAM *dsram, uint32_t address, uint32_t data);
 
 int read_from_main_memory(int *main_memory, int address);
 
