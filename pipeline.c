@@ -1,4 +1,4 @@
-#include "pipeline_cpu.h"
+#include "state_machine.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
