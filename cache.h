@@ -34,10 +34,10 @@ typedef enum {
 } MESIState;
 
 typedef enum {
-    BUS_READ,          // Request for shared read
-    BUS_READ_EXCLUSIVE, // Request for exclusive read (write intent)
-    BUS_WRITE_BACK,    // Write data back to main memory
-    BUS_INVALIDATE     // Invalidate cache line
+    NO_COMMAND,          // Request for shared read
+    BUS_RD, // Request for exclusive read (write intent)
+    BUS_RDX,    // Write data back to main memory
+    FLUSH     // Invalidate cache line
 } BusOperation;
 
 // Data Cache structure (DSRAM)
@@ -58,10 +58,18 @@ typedef struct {
     FILE *logfile;
 } TSRAM;
 
-
+typedef struct
+{
+    int bus_origid; //Originator of this transaction 0: core 0 1: core 1 2: core 2 3: core 3 4: main memory
+    BusOperation bus_cmd; // 0: no command, 1: busrd, 2:busrdx, 3:flush
+    int bus_addr; //word address
+    int bus_data;// word data
+    int bus_shared; // set to 1 when answering a BusRd transaction if any of the cores has the data in the cache, otherwise set to 0.
+    FILE *logfile;
+} MESI_bus;
 
 // Function Prototypes
-
+void log_mesibus(MESI_bus *bus, int cycle);
 // Function to initialize the DSRAM (cache) with the value 2
 void init_dsr_cache(DSRAM *dsram);
 
@@ -81,17 +89,21 @@ void log_cache_state(DSRAM *dsram, TSRAM *tsram);
 void write_main_memory_to_file(FILE *file);
 
 // Cache read operation, returns true for cache hit
-bool cache_read(DSRAM *dsram, TSRAM *tsram, uint32_t address, uint32_t *data);
+bool cache_read(DSRAM dsram, TSRAM tsram, int orig_id, uint32_t address, uint32_t *data, MESI_bus *mesi_bus);
 
 // Cache write operation
-void cache_write(DSRAM *dsram, TSRAM *tsram, uint32_t address, uint32_t data);
+void cache_write(DSRAM *dsram, TSRAM *tsram, uint32_t address, uint32_t data, MESI_bus *mesi_bus);
 
 int read_from_main_memory(int *main_memory, int address);
 
-void snoop_bus(DSRAM *dsram, TSRAM *tsram, BusOperation op, uint32_t address, uint32_t *data_out);
+void snoop_bus(DSRAM *dsram, TSRAM *tsram, BusOperation op, uint32_t address, uint32_t *data_out, MESI_bus *mesi_bus);
 
 void init_caches(DSRAM dsrams[], TSRAM tsrams[]);
 
 void initialize_DSRAM(DSRAM *dsram, const char *log_filename);
 
 void initialize_TSRAM(TSRAM *tsram, const char *log_filename);
+
+void initialize_mesi_bus(MESI_bus *bus, const char *log_filename);
+
+int* check_shared_bus(TSRAM tsrams[], DSRAM dsrams[], int origid, int address);
